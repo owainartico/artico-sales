@@ -63,10 +63,28 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
+// ── Idempotent migrations ─────────────────────────────────────────────────────
+async function runMigrations() {
+  try {
+    await pool.query(`
+      ALTER TABLE alert_log
+        ADD COLUMN IF NOT EXISTS tier         SMALLINT     NOT NULL DEFAULT 1,
+        ADD COLUMN IF NOT EXISTS alert_title  VARCHAR(255) NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS alert_detail JSONB        NOT NULL DEFAULT '{}';
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_alert_log_tier ON alert_log(tier);`);
+    console.log('[migrations] alert_log columns OK');
+  } catch (err) {
+    console.error('[migrations] Failed to apply alert_log migration:', err.message);
+  }
+}
+
 // ── Start ─────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Artico Sales App running on http://localhost:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+
+  await runMigrations();
 
   // Start background Zoho sync scheduler (runs every 60 minutes)
   const { startScheduler } = require('./src/services/sync');

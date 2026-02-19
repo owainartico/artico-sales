@@ -303,10 +303,7 @@ async function loadDashboard(force = false) {
 
   el('btn-dash-refresh')?.addEventListener('click', () => loadDashboard(true));
 
-  const [data, alerts] = await Promise.all([
-    api('GET', url),
-    api('GET', '/api/alerts?limit=20'),
-  ]);
+  const data = await api('GET', url);
 
   if (!data || data.error) {
     page.innerHTML = `
@@ -322,9 +319,11 @@ async function loadDashboard(force = false) {
 
   if (_dashChart) { _dashChart.destroy(); _dashChart = null; }
 
-  const alertList = Array.isArray(alerts) ? alerts : [];
-  if (isManager) renderTeamDashboard(page, data, alertList);
-  else           renderRepDashboard(page, data, alertList);
+  if (isManager) renderTeamDashboard(page, data);
+  else           renderRepDashboard(page, data);
+
+  // Load alerts after dashboard is visible — failure here won't break the dashboard
+  loadDashboardAlerts();
 }
 
 function refreshDashboard() { loadDashboard(true); }
@@ -376,7 +375,7 @@ function freshnessBanner(lastUpdated, lastSyncAt) {
 
 // ── Rep dashboard renderer ────────────────────────────────────────────────────
 
-function renderRepDashboard(page, d, alerts = []) {
+function renderRepDashboard(page, d) {
   const { hero, ytd, monthly_history, brand_breakdown, quick_stats, month } = d;
   const pc = pctClass(hero.percentage);
 
@@ -473,15 +472,15 @@ function renderRepDashboard(page, d, alerts = []) {
       </div>
     </div>
 
-    <!-- Alerts -->
-    ${renderAlertsSection(alerts)}`;
+    <!-- Alerts placeholder (filled by loadDashboardAlerts) -->
+    <div id="alerts-container"><div class="skeleton-block skeleton-block--sm" style="margin-top:var(--space-4);"></div></div>`;
 
   renderSparkline('chart-monthly', monthly_history);
 }
 
 // ── Team dashboard renderer ───────────────────────────────────────────────────
 
-function renderTeamDashboard(page, d, alerts = []) {
+function renderTeamDashboard(page, d) {
   const { leaderboard, totals, ytd, brand_performance, new_doors_by_rep, monthly_history, month } = d;
 
   const leaderRows = leaderboard.map((r, i) => {
@@ -612,8 +611,8 @@ function renderTeamDashboard(page, d, alerts = []) {
       ${doorRows}
     </div>
 
-    <!-- Alerts -->
-    ${renderAlertsSection(alerts)}`;
+    <!-- Alerts placeholder (filled by loadDashboardAlerts) -->
+    <div id="alerts-container"><div class="skeleton-block skeleton-block--sm" style="margin-top:var(--space-4);"></div></div>`;
 
   renderSparkline('chart-monthly', monthly_history);
 }
@@ -1799,8 +1798,21 @@ const ALERT_TYPE_LABELS = {
   focus_line:           'Focus Line',
 };
 
+// Renders alert cards into the #alerts-container div (already in DOM).
+// Called by loadDashboardAlerts() after the dashboard has rendered.
 function renderAlertsSection(alerts) {
-  if (!alerts || alerts.length === 0) return '';
+  const container = el('alerts-container');
+  if (!container) return;
+
+  if (!Array.isArray(alerts) || alerts.length === 0) {
+    const isManager = currentUser && ['manager', 'executive'].includes(currentUser.role);
+    const runBtn    = isManager
+      ? `<button class="btn btn--ghost btn--sm" onclick="runAlerts()">Run Alert Engine</button>` : '';
+    container.innerHTML = `
+      <div class="section-label" style="margin-top:var(--space-4);">Alerts ${runBtn}</div>
+      <p class="text-muted text-sm" style="padding:0 4px;">No active alerts.</p>`;
+    return;
+  }
 
   const tier1 = alerts.filter(a => a.tier === 1);
   const tier2 = alerts.filter(a => a.tier === 2);
@@ -1843,20 +1855,17 @@ function renderAlertsSection(alerts) {
     </div>` : '';
 
   const isManager = currentUser && ['manager', 'executive'].includes(currentUser.role);
-  const runBtn    = isManager ? `
-    <button class="btn btn--ghost btn--sm" onclick="runAlerts()" style="margin-top:var(--space-2);">
-      Run Alert Engine
-    </button>` : '';
+  const runBtn    = isManager
+    ? `<button class="btn btn--ghost btn--sm" onclick="runAlerts()">Run Alert Engine</button>` : '';
 
-  return `
-    <div class="section-label" style="margin-top:var(--space-6);">
-      Alerts
-      ${runBtn}
-    </div>
-    <div id="alerts-container">
-      ${tier1Html}${tier2Html}
-      ${!tier1Html && !tier2Html ? '<p class="text-muted text-sm" style="padding:0 4px;">No active alerts.</p>' : ''}
-    </div>`;
+  container.innerHTML = `
+    <div class="section-label" style="margin-top:var(--space-4);">Alerts ${runBtn}</div>
+    ${tier1Html}${tier2Html}`;
+}
+
+async function loadDashboardAlerts() {
+  const alerts = await api('GET', '/api/alerts?limit=20');
+  renderAlertsSection(Array.isArray(alerts) ? alerts : []);
 }
 
 async function ackAlert(alertId) {
@@ -1877,10 +1886,9 @@ async function ackAlert(alertId) {
     if (!g.querySelector('.alert-card')) g.remove();
   });
 
-  // If container is now empty, show the 'no alerts' message
-  const container = el('alerts-container');
-  if (container && !container.querySelector('.alert-card')) {
-    container.innerHTML = '<p class="text-muted text-sm" style="padding:0 4px;">No active alerts.</p>';
+  // If no alerts remain, show 'no alerts' message
+  if (!document.querySelector('.alert-card')) {
+    renderAlertsSection([]);
   }
 }
 
@@ -1892,7 +1900,7 @@ async function runAlerts() {
     return;
   }
   toast(`Alert engine complete — ${result.inserted} new alert${result.inserted !== 1 ? 's' : ''} generated.`, null, 5000);
-  loadDashboard();
+  loadDashboardAlerts();
 }
 
 // ── Expose globals for inline onclick handlers ────────────────────────────────
