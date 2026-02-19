@@ -886,7 +886,326 @@ body {
 .text-danger  { color: var(--color-danger); }
 .text-right   { text-align: right; }
 .text-sm      { font-size: var(--text-sm); }
+.text-xs      { font-size: 0.75rem; }
 .fw-bold      { font-weight: 700; }
 .mt-4         { margin-top: var(--space-4); }
 .mb-4         { margin-bottom: var(--space-4); }
 .hidden       { display: none !important; }
+
+/* ═══════════════════════════════════════════════════════════════
+   PROMPT 5 — Visits, Stores, New Doors
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Grade badge ───────────────────────────────────────────────── */
+.grade-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 0.7rem;
+  font-weight: 800;
+  flex-shrink: 0;
+  color: #fff;
+  background: var(--color-muted);
+}
+.grade-badge--a { background: var(--grade-a); }
+.grade-badge--b { background: var(--grade-b); color: #1A1D2E; }
+.grade-badge--c { background: var(--color-border); color: var(--color-muted); }
+
+/* ── Visit status colours ──────────────────────────────────────── */
+.visit-status--fresh   { color: var(--color-success); }
+.visit-status--warn    { color: var(--color-warning); }
+.visit-status--overdue { color: var(--color-danger); }
+.visit-status--never   { color: var(--color-muted); }
+
+/* ── Status chip (analytics table) ────────────────────────────── */
+.status-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.status-chip--ok      { background: #D1FAE5; color: #065F46; }
+.status-chip--warn    { background: #FEF3C7; color: #92400E; }
+.status-chip--overdue { background: #FEE2E2; color: #991B1B; }
+.status-chip--never   { background: var(--color-border); color: var(--color-muted); }
+
+/* ── [Stores | New Doors] view toggle ─────────────────────────── */
+.view-toggle {
+  display: inline-flex;
+  border: 1.5px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin-bottom: var(--space-3);
+}
+.view-toggle__btn {
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.view-toggle__btn.active {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+/* ── Filter row ────────────────────────────────────────────────── */
+.filter-row {
+  display: flex;
+  gap: var(--space-2);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: var(--space-1);
+  margin-bottom: var(--space-3);
+  scrollbar-width: none;
+}
+.filter-row::-webkit-scrollbar { display: none; }
+
+.filter-search {
+  min-width: 140px;
+  flex: 1;
+}
+.filter-select {
+  min-width: 120px;
+  flex-shrink: 0;
+  padding-right: var(--space-6);
+}
+
+/* ── Store list row ────────────────────────────────────────────── */
+.store-row {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: box-shadow 0.1s;
+}
+.store-row:active { box-shadow: none; }
+
+.store-row__main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.store-row__info { flex: 1; min-width: 0; }
+.store-row__name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.store-row__sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.store-row__visit { text-align: right; flex-shrink: 0; }
+
+/* ── Visit row (recent visits list) ───────────────────────────── */
+.visit-row .visit-row__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.visit-row__note {
+  margin-top: var(--space-1);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border);
+  font-style: italic;
+}
+
+/* ── Log Visit fullscreen modal ────────────────────────────────── */
+.fullscreen-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  background: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+  animation: slideInFromBottom 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.fullscreen-modal.hidden { display: none !important; }
+
+@keyframes slideInFromBottom {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+.fullscreen-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-4) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+/* Store pick list inside log visit modal */
+.store-pick-list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.store-pick-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  background: var(--color-surface);
+  transition: background 0.1s;
+}
+.store-pick-row:active { background: var(--color-bg); }
+.store-pick-row__info { flex: 1; min-width: 0; }
+
+/* Selected store card in phase 2 */
+.selected-store-card {
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  border: 2px solid var(--color-primary);
+}
+.selected-store-card__inner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* ── Store detail slide-up sheet ───────────────────────────────── */
+.detail-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 350;
+  background: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+  transform: translateY(100%);
+  transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.detail-sheet.hidden { display: none !important; }
+.detail-sheet.open   { transform: translateY(0); }
+
+.detail-sheet__handle-bar {
+  width: 40px;
+  height: 4px;
+  background: var(--color-border);
+  border-radius: 2px;
+  margin: var(--space-2) auto 0;
+  flex-shrink: 0;
+}
+.detail-sheet__header {
+  display: flex;
+  align-items: flex-start;
+  padding: var(--space-3) var(--space-4) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+.detail-sheet__body {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: var(--space-4);
+}
+.detail-sheet__footer {
+  padding: var(--space-3) var(--space-4);
+  padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom, 0));
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+  flex-shrink: 0;
+}
+
+/* Key-value rows in store detail */
+.detail-kv-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+  gap: var(--space-2);
+}
+.detail-kv-row:last-child { border-bottom: none; }
+
+/* Visit history inside store detail */
+.visit-hist-row {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.visit-hist-row:last-child { border-bottom: none; }
+.visit-hist-note {
+  margin-top: var(--space-1);
+  color: var(--color-muted);
+  font-style: italic;
+}
+
+/* ── Visit analytics table ─────────────────────────────────────── */
+.analytics-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--text-sm);
+}
+.analytics-table th,
+.analytics-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+  text-align: left;
+}
+.analytics-table th {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-muted);
+  background: var(--color-bg);
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.analytics-table th:hover { color: var(--color-primary); }
+.analytics-table tr:last-child td { border-bottom: none; }
+.analytics-table tr:active td { background: var(--color-bg); }
+
+/* ── New Door card ─────────────────────────────────────────────── */
+.new-door-card {
+  /* inherits .card styles */
+  margin-bottom: var(--space-3);
+}
+
+/* ── Textarea ──────────────────────────────────────────────────── */
+.form-textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+/* ── btn-text ──────────────────────────────────────────────────── */
+.btn-text {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-size: inherit;
+  text-decoration: underline;
+  color: inherit;
+}
+
+/* ── Section label ─────────────────────────────────────────────── */
+.section-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-muted);
+  padding: var(--space-2) 0 var(--space-1);
+  margin-top: var(--space-2);
+}

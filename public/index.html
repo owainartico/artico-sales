@@ -103,33 +103,11 @@
       <!-- Dashboard — content injected by app.js -->
       <div id="page-dashboard" class="page"></div>
 
-      <!-- Visits -->
-      <div id="page-visits" class="page hidden">
-        <div class="page-header">
-          <h1 class="page-title">Visits</h1>
-        </div>
-        <div class="skeleton-block"></div>
-        <div class="skeleton-block skeleton-block--sm"></div>
-        <div class="empty-state hidden" id="visits-empty">
-          <div class="empty-state__icon">📍</div>
-          <div class="empty-state__title">No visits logged</div>
-          <div class="empty-state__desc">Tap the + button to log your first visit.</div>
-        </div>
-      </div>
+      <!-- Visits — content injected by app.js -->
+      <div id="page-visits" class="page hidden"></div>
 
-      <!-- Stores -->
-      <div id="page-stores" class="page hidden">
-        <div class="page-header">
-          <h1 class="page-title">Stores</h1>
-        </div>
-        <div class="skeleton-block"></div>
-        <div class="skeleton-block skeleton-block--sm"></div>
-        <div class="empty-state hidden" id="stores-empty">
-          <div class="empty-state__icon">🏪</div>
-          <div class="empty-state__title">No stores loaded</div>
-          <div class="empty-state__desc">Stores sync from Zoho every 60 minutes.</div>
-        </div>
-      </div>
+      <!-- Stores — content injected by app.js -->
+      <div id="page-stores" class="page hidden"></div>
 
       <!-- Targets (manager / executive only) -->
       <div id="page-targets" class="page hidden">
@@ -216,6 +194,62 @@
     </nav>
 
   </div><!-- /screen-app -->
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Log Visit Modal — full-screen store search + confirm
+  ══════════════════════════════════════════════════════════════ -->
+  <div id="modal-log-visit" class="fullscreen-modal hidden">
+    <div class="fullscreen-modal__header">
+      <button class="modal__close" id="log-visit-back" style="font-size:1.25rem;">&#8592;</button>
+      <h2 class="modal__title" id="log-visit-title">Log Visit</h2>
+      <button class="modal__close" id="log-visit-close">&times;</button>
+    </div>
+
+    <!-- Phase 1: Search & select store -->
+    <div id="log-visit-phase1">
+      <div style="padding:var(--space-3) var(--space-4) var(--space-2);">
+        <input id="log-visit-search" type="search" class="form-input"
+               placeholder="Search your stores…" autocomplete="off" autocorrect="off">
+      </div>
+      <div id="log-visit-store-list" class="store-pick-list"></div>
+    </div>
+
+    <!-- Phase 2: Note + confirm (hidden until store selected) -->
+    <div id="log-visit-phase2" class="hidden" style="padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-4);">
+      <div id="log-visit-selected-card" class="selected-store-card"></div>
+      <div class="form-group">
+        <label class="form-label" for="log-visit-note">Note <span class="form-hint">Optional</span></label>
+        <textarea id="log-visit-note" class="form-input form-textarea"
+                  rows="3" placeholder="How did the visit go?"></textarea>
+      </div>
+      <div id="log-visit-error" class="form-error hidden"></div>
+      <button class="btn btn--accent btn--full" id="log-visit-submit">Log Visit</button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Store Detail Sheet — slides up over content
+  ══════════════════════════════════════════════════════════════ -->
+  <div id="modal-store-detail" class="detail-sheet hidden">
+    <div class="detail-sheet__handle-bar"></div>
+    <div class="detail-sheet__header">
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:var(--space-2);">
+          <span id="store-detail-grade" class="grade-badge"></span>
+          <h2 class="modal__title" id="store-detail-name" style="margin:0;"></h2>
+        </div>
+        <div id="store-detail-meta" class="text-sm text-muted" style="margin-top:2px;"></div>
+      </div>
+      <button class="modal__close" id="store-detail-close">&times;</button>
+    </div>
+    <div class="detail-sheet__body" id="store-detail-body">
+      <div class="skeleton-block"></div>
+      <div class="skeleton-block skeleton-block--sm"></div>
+    </div>
+    <div class="detail-sheet__footer">
+      <button class="btn btn--accent btn--full" id="store-detail-log-btn">+ Log Visit</button>
+    </div>
+  </div>
 
   <!-- ═══════════════════════════════════════════════════════════
        User Modal (create / edit)

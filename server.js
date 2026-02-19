@@ -39,11 +39,11 @@ app.use('/auth',         require('./src/routes/auth'));
 app.use('/api/users',    require('./src/routes/users'));
 app.use('/api/targets',   require('./src/routes/targets'));
 app.use('/api/dashboard', require('./src/routes/dashboard'));
+app.use('/api/stores',    require('./src/routes/stores'));
+app.use('/api/visits',    require('./src/routes/visits'));
 app.use('/api',           require('./src/routes/zoho'));
 
 // Placeholder routes — wired in later prompts:
-// app.use('/api/stores',  require('./src/routes/stores'));
-// app.use('/api/visits',  require('./src/routes/visits'));
 // app.use('/api/alerts',  require('./src/routes/alerts'));
 
 // ── SPA catch-all — serve index.html for unknown non-API paths ────────────────

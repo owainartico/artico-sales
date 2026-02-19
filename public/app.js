@@ -709,14 +709,762 @@ function setupPullToRefresh() {
   }, { passive: true });
 }
 
-// ── Visits (placeholder — content in Prompt 5) ───────────────────────────────
-function loadVisits() {
-  // Placeholder — real implementation in Prompt 5
+// ═══════════════════════════════════════════════════════════════════
+//  VISITS
+// ═══════════════════════════════════════════════════════════════════
+
+// ── State ─────────────────────────────────────────────────────────
+let _logVisitSelected  = null;   // { id, name, grade, channel_type, state }
+let _logVisitDebounce  = null;
+let _logVisitStoresAll = null;   // cached from /api/stores for the modal
+let _analyticsData     = [];
+let _visitSort         = { col: 'days_since', dir: 'desc' };
+let _analyticsRepFilter = null;
+
+// ── Entry point ───────────────────────────────────────────────────
+async function loadVisits() {
+  const isManager = ['manager', 'executive'].includes(currentUser.role);
+  const page = el('page-visits');
+
+  if (isManager) {
+    page.innerHTML = `
+      <div class="page-header">
+        <h1 class="page-title">Visit Analytics</h1>
+        <button class="btn btn--ghost btn--sm" id="btn-visits-csv" onclick="exportAnalyticsCSV()">Export CSV</button>
+      </div>
+      <div class="filter-row" id="analytics-filter-row">
+        <select class="form-select" id="analytics-rep-filter" onchange="analyticsRepChanged(this.value)">
+          <option value="">All Reps</option>
+        </select>
+      </div>
+      <div id="analytics-wrap">
+        <div class="skeleton-block"></div>
+        <div class="skeleton-block skeleton-block--sm"></div>
+      </div>`;
+
+    // Populate rep filter
+    const reps = await api('GET', '/api/users?role=rep');
+    if (reps && !reps.error) {
+      const sel = el('analytics-rep-filter');
+      reps.forEach(r => {
+        const o = document.createElement('option');
+        o.value = r.id; o.textContent = r.name;
+        sel.appendChild(o);
+      });
+    }
+
+    loadManagerAnalytics();
+  } else {
+    page.innerHTML = `
+      <div class="page-header">
+        <h1 class="page-title">Visits</h1>
+        <button class="btn btn--accent" id="btn-log-visit"
+                style="padding:0.5rem 1rem;font-size:0.875rem;"
+                onclick="openLogVisitModal()">+ Log Visit</button>
+      </div>
+      <div id="visits-list">
+        <div class="skeleton-block"></div>
+        <div class="skeleton-block skeleton-block--sm"></div>
+      </div>`;
+
+    loadRecentVisits();
+  }
 }
 
-// ── Stores (placeholder — content in Prompt 6) ───────────────────────────────
-function loadStores() {
-  // Placeholder — real implementation in Prompt 6
+// ── Recent visits list (rep) ──────────────────────────────────────
+async function loadRecentVisits() {
+  const wrap = el('visits-list');
+  if (!wrap) return;
+  const visits = await api('GET', '/api/visits?limit=20');
+
+  if (!visits || visits.error) {
+    wrap.innerHTML = '<p class="text-muted text-sm" style="padding:var(--space-4);">Failed to load visits.</p>';
+    return;
+  }
+
+  if (visits.length === 0) {
+    wrap.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state__icon">📍</div>
+        <div class="empty-state__title">No visits yet</div>
+        <div class="empty-state__desc">Tap <strong>+ Log Visit</strong> to record your first visit.</div>
+      </div>`;
+    return;
+  }
+
+  wrap.innerHTML = `
+    <div class="section-label">Recent Visits</div>
+    ${visits.map(v => {
+      const canUndo = (Date.now() - new Date(v.created_at).getTime()) < 4.5 * 60 * 1000;
+      return `
+        <div class="card visit-row" id="visit-row-${v.id}">
+          <div class="visit-row__top">
+            <div>
+              <div class="fw-bold">${v.store_name}</div>
+              ${v.grade ? `<span class="grade-badge grade-badge--${v.grade.toLowerCase()}">${v.grade}</span>` : ''}
+            </div>
+            <div class="text-right">
+              <div class="text-sm text-muted">${timeAgo(v.visited_at)}</div>
+              ${canUndo ? `<button class="btn-text text-danger text-sm" onclick="undoVisit(${v.id},'${v.store_name.replace(/'/g,"\\'") }')">Undo</button>` : ''}
+            </div>
+          </div>
+          ${v.note ? `<div class="visit-row__note text-sm text-muted">${escHtml(v.note)}</div>` : ''}
+        </div>`;
+    }).join('')}`;
+}
+
+// ── Log Visit Modal ────────────────────────────────────────────────
+function openLogVisitModal(preselectedStore) {
+  const modal = el('modal-log-visit');
+  el('log-visit-search').value = '';
+  el('log-visit-note').value   = '';
+  el('log-visit-phase1').classList.remove('hidden');
+  el('log-visit-phase2').classList.add('hidden');
+  el('log-visit-back').style.visibility = 'hidden';
+  el('log-visit-title').textContent     = 'Log Visit';
+  el('log-visit-store-list').innerHTML  = '<p class="text-muted text-sm" style="padding:var(--space-4);">Start typing to search your stores…</p>';
+  clearError('log-visit-error');
+  _logVisitSelected = null;
+
+  modal.classList.remove('hidden');
+
+  if (preselectedStore) {
+    selectLogVisitStore(preselectedStore);
+  } else {
+    setTimeout(() => el('log-visit-search').focus(), 100);
+    // Pre-load store list
+    fetchLogVisitStores('');
+  }
+}
+
+function closeLogVisitModal() {
+  el('modal-log-visit').classList.add('hidden');
+  _logVisitSelected = null;
+  _logVisitStoresAll = null;
+  clearTimeout(_logVisitDebounce);
+}
+
+el('log-visit-close').addEventListener('click', closeLogVisitModal);
+
+el('log-visit-back').addEventListener('click', () => {
+  el('log-visit-phase2').classList.add('hidden');
+  el('log-visit-phase1').classList.remove('hidden');
+  el('log-visit-back').style.visibility = 'hidden';
+  el('log-visit-title').textContent = 'Log Visit';
+  _logVisitSelected = null;
+});
+
+el('log-visit-search').addEventListener('input', e => {
+  clearTimeout(_logVisitDebounce);
+  _logVisitDebounce = setTimeout(() => fetchLogVisitStores(e.target.value.trim()), 300);
+});
+
+async function fetchLogVisitStores(q) {
+  const list = el('log-visit-store-list');
+  if (!list) return;
+
+  // Use cached data if available and no query
+  if (!q && _logVisitStoresAll) {
+    renderLogVisitStoreList(_logVisitStoresAll, '');
+    return;
+  }
+
+  const url = q.length >= 2 ? `/api/stores?q=${encodeURIComponent(q)}&limit=10`
+                             : '/api/stores?limit=30';
+  const stores = await api('GET', url);
+  if (!q) _logVisitStoresAll = stores; // cache unfiltered result
+
+  if (!stores || stores.error || stores.length === 0) {
+    list.innerHTML = `<p class="text-muted text-sm" style="padding:var(--space-4);">${q ? 'No stores found.' : 'No stores assigned.'}</p>`;
+    return;
+  }
+  renderLogVisitStoreList(stores, q);
+}
+
+function renderLogVisitStoreList(stores, q) {
+  const list = el('log-visit-store-list');
+  list.innerHTML = stores.map(s => `
+    <div class="store-pick-row" onclick="selectLogVisitStore(${JSON.stringify(s).replace(/"/g,'&quot;')})">
+      <span class="grade-badge grade-badge--${(s.grade || 'c').toLowerCase()}">${s.grade || '?'}</span>
+      <div class="store-pick-row__info">
+        <div class="fw-bold">${escHtml(s.name)}</div>
+        <div class="text-sm text-muted">${[s.channel_type, s.state].filter(Boolean).join(' · ')}</div>
+      </div>
+      <div class="text-sm ${visitStatusClass(s.days_since_visit)}">${visitStatusLabel(s.days_since_visit)}</div>
+    </div>`).join('');
+}
+
+function selectLogVisitStore(store) {
+  _logVisitSelected = store;
+  el('log-visit-phase1').classList.add('hidden');
+  el('log-visit-phase2').classList.remove('hidden');
+  el('log-visit-back').style.visibility = 'visible';
+  el('log-visit-title').textContent = 'Confirm Visit';
+
+  el('log-visit-selected-card').innerHTML = `
+    <div class="selected-store-card__inner">
+      <span class="grade-badge grade-badge--${(store.grade || 'c').toLowerCase()}">${store.grade || '?'}</span>
+      <div>
+        <div class="fw-bold">${escHtml(store.name)}</div>
+        <div class="text-sm text-muted">${[store.channel_type, store.state].filter(Boolean).join(' · ')}</div>
+      </div>
+    </div>`;
+
+  el('log-visit-note').focus();
+}
+
+el('log-visit-submit').addEventListener('click', async () => {
+  if (!_logVisitSelected) return;
+  clearError('log-visit-error');
+
+  const btn  = el('log-visit-submit');
+  const note = el('log-visit-note').value.trim();
+
+  btn.disabled = true;
+  btn.textContent = 'Logging…';
+
+  const result = await api('POST', '/api/visits', {
+    store_id: _logVisitSelected.id,
+    note:     note || null,
+  });
+
+  btn.disabled = false;
+  btn.textContent = 'Log Visit';
+
+  if (!result || result.error) {
+    showError('log-visit-error', result?.error || 'Failed to log visit.');
+    return;
+  }
+
+  const storeName = result.store_name;
+  closeLogVisitModal();
+
+  // Refresh visits list
+  if (currentTab === 'visits') loadRecentVisits();
+  // Invalidate store list cache
+  _logVisitStoresAll = null;
+
+  toast(`Visit logged — ${storeName}`, async () => {
+    await undoVisit(result.id, storeName);
+  }, 8000);
+});
+
+async function undoVisit(visitId, storeName) {
+  const result = await api('DELETE', `/api/visits/${visitId}`);
+  if (!result || result.error) {
+    toast(result?.error || 'Could not undo — undo window may have expired.');
+    return;
+  }
+  toast(`Visit to ${storeName} removed.`);
+  if (currentTab === 'visits') loadRecentVisits();
+}
+window.undoVisit = undoVisit;
+
+// ── Manager visit analytics ────────────────────────────────────────
+async function loadManagerAnalytics(repId) {
+  const wrap = el('analytics-wrap');
+  if (!wrap) return;
+
+  const url = repId ? `/api/visits/analytics?rep_id=${repId}` : '/api/visits/analytics';
+  const data = await api('GET', url);
+
+  if (!data || data.error) {
+    wrap.innerHTML = '<p class="text-muted" style="padding:var(--space-4);">Failed to load analytics.</p>';
+    return;
+  }
+
+  _analyticsData = data;
+  renderAnalyticsTable(_analyticsData);
+}
+
+function analyticsRepChanged(repId) {
+  _analyticsRepFilter = repId || null;
+  loadManagerAnalytics(_analyticsRepFilter);
+}
+window.analyticsRepChanged = analyticsRepChanged;
+
+function visitStatusClass(days) {
+  if (days === null || days === undefined) return 'visit-status--never';
+  if (days <= 30)  return 'visit-status--fresh';
+  if (days <= 60)  return 'visit-status--warn';
+  return 'visit-status--overdue';
+}
+
+function visitStatusLabel(days) {
+  if (days === null || days === undefined) return 'Never';
+  if (days === 0) return 'Today';
+  if (days <= 30)  return `${days}d ago`;
+  if (days <= 60)  return `${days}d ago`;
+  return `${days}d ago`;
+}
+
+function visitStatusChip(days) {
+  if (days === null || days === undefined) return '<span class="status-chip status-chip--never">Never</span>';
+  if (days <= 30)  return `<span class="status-chip status-chip--ok">OK</span>`;
+  if (days <= 60)  return `<span class="status-chip status-chip--warn">Due</span>`;
+  return `<span class="status-chip status-chip--overdue">Overdue</span>`;
+}
+
+function sortAnalytics(col) {
+  if (_visitSort.col === col) {
+    _visitSort.dir = _visitSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _visitSort.col = col;
+    _visitSort.dir = col === 'days_since' ? 'desc' : 'asc';
+  }
+  renderAnalyticsTable(_analyticsData);
+}
+window.sortAnalytics = sortAnalytics;
+
+function renderAnalyticsTable(data) {
+  const wrap = el('analytics-wrap');
+  if (!wrap) return;
+
+  const sorted = [...data].sort((a, b) => {
+    let av = a[_visitSort.col], bv = b[_visitSort.col];
+    if (av === null || av === undefined) return 1;
+    if (bv === null || bv === undefined) return -1;
+    if (typeof av === 'string') av = av.toLowerCase(), bv = bv.toLowerCase();
+    const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+    return _visitSort.dir === 'asc' ? cmp : -cmp;
+  });
+
+  const arrow = col =>
+    _visitSort.col === col ? (_visitSort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+
+  wrap.innerHTML = `
+    <div class="table-scroll">
+      <table class="analytics-table">
+        <thead>
+          <tr>
+            <th onclick="sortAnalytics('name')">Store${arrow('name')}</th>
+            <th onclick="sortAnalytics('rep_name')">Rep${arrow('rep_name')}</th>
+            <th onclick="sortAnalytics('grade')">Grade${arrow('grade')}</th>
+            <th onclick="sortAnalytics('days_since_visit')">Last Visit${arrow('days_since_visit')}</th>
+            <th onclick="sortAnalytics('days_since_visit')">Days${arrow('days_since_visit')}</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sorted.map(r => `
+            <tr onclick="openStoreDetail(${r.id})" style="cursor:pointer;">
+              <td class="fw-bold">${escHtml(r.name)}</td>
+              <td class="text-muted">${escHtml(r.rep_name || '—')}</td>
+              <td><span class="grade-badge grade-badge--${(r.grade || 'c').toLowerCase()}">${r.grade || '—'}</span></td>
+              <td class="text-sm">${r.last_visit_at ? new Date(r.last_visit_at).toLocaleDateString('en-AU') : '—'}</td>
+              <td class="${visitStatusClass(r.days_since_visit)}">${r.days_since_visit !== null ? r.days_since_visit : '—'}</td>
+              <td>${visitStatusChip(r.days_since_visit)}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function exportAnalyticsCSV() {
+  if (!_analyticsData.length) return;
+  const headers = ['Store', 'Rep', 'Grade', 'State', 'Last Visit', 'Days Since', 'Status', 'Visit Count'];
+  const rows = _analyticsData.map(r => [
+    csvEsc(r.name), csvEsc(r.rep_name || ''), r.grade || '',
+    r.state || '',
+    r.last_visit_at ? new Date(r.last_visit_at).toLocaleDateString('en-AU') : '',
+    r.days_since_visit ?? '',
+    r.days_since_visit === null ? 'Never' : r.days_since_visit <= 30 ? 'OK' : r.days_since_visit <= 60 ? 'Due' : 'Overdue',
+    r.visit_count || 0,
+  ]);
+
+  const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `visit-analytics-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+window.exportAnalyticsCSV = exportAnalyticsCSV;
+
+function csvEsc(s) {
+  if (!s) return '';
+  const str = String(s);
+  return str.includes(',') || str.includes('"') || str.includes('\n')
+    ? `"${str.replace(/"/g, '""')}"` : str;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  STORES
+// ═══════════════════════════════════════════════════════════════════
+
+// ── State ─────────────────────────────────────────────────────────
+let _storesView         = 'list';   // 'list' | 'new-doors'
+let _storesSearch       = '';
+let _storesGrade        = '';
+let _storesState        = '';
+let _storesVisitStatus  = '';
+let _storesRepFilter    = '';
+let _storesCurrentId    = null;
+let _storesCurrentData  = null;  // full store object from /api/stores/:id
+let _newDoorsMonth      = null;
+
+// ── Entry point ────────────────────────────────────────────────────
+async function loadStores() {
+  const page = el('page-stores');
+  const isManager = ['manager', 'executive'].includes(currentUser.role);
+
+  // Reset search state on fresh load
+  _storesSearch = ''; _storesGrade = ''; _storesState = '';
+  _storesVisitStatus = ''; _storesRepFilter = '';
+
+  page.innerHTML = `
+    <!-- View toggle -->
+    <div class="page-header" style="margin-bottom:0;">
+      <div class="view-toggle">
+        <button class="view-toggle__btn ${_storesView === 'list' ? 'active' : ''}" onclick="switchStoresView('list')">Stores</button>
+        <button class="view-toggle__btn ${_storesView === 'new-doors' ? 'active' : ''}" onclick="switchStoresView('new-doors')">New Doors</button>
+      </div>
+    </div>
+
+    <!-- Store list view -->
+    <div id="stores-list-view" class="${_storesView !== 'list' ? 'hidden' : ''}">
+      <div class="filter-row" id="stores-filter-row">
+        <input id="stores-search" type="search" class="form-input filter-search"
+               placeholder="Search stores…" value="${_storesSearch}" oninput="storesSearchChanged(this.value)" autocomplete="off">
+        <select class="form-select filter-select" onchange="storesFilterChanged('grade', this.value)">
+          <option value="">All Grades</option>
+          <option value="A">A</option><option value="B">B</option><option value="C">C</option>
+        </select>
+        <select class="form-select filter-select" onchange="storesFilterChanged('visit_status', this.value)">
+          <option value="">All Status</option>
+          <option value="ok">OK (≤30d)</option>
+          <option value="amber">Due (31–60d)</option>
+          <option value="overdue">Overdue / Never</option>
+        </select>
+        ${isManager ? `
+          <select class="form-select filter-select" id="stores-rep-filter" onchange="storesFilterChanged('rep', this.value)">
+            <option value="">All Reps</option>
+          </select>` : ''}
+      </div>
+      <div id="stores-list">
+        <div class="skeleton-block"></div>
+        <div class="skeleton-block skeleton-block--sm"></div>
+      </div>
+    </div>
+
+    <!-- New Doors view -->
+    <div id="new-doors-view" class="${_storesView !== 'new-doors' ? 'hidden' : ''}">
+      <div id="new-doors-content">
+        <div class="skeleton-block"></div>
+        <div class="skeleton-block skeleton-block--sm"></div>
+      </div>
+    </div>`;
+
+  // Populate rep filter for managers
+  if (isManager) {
+    const reps = await api('GET', '/api/users?role=rep');
+    if (reps && !reps.error) {
+      const sel = el('stores-rep-filter');
+      if (sel) reps.forEach(r => {
+        const o = document.createElement('option');
+        o.value = r.id; o.textContent = r.name;
+        sel.appendChild(o);
+      });
+    }
+  }
+
+  if (_storesView === 'list') {
+    loadStoreList();
+  } else {
+    loadNewDoors(_newDoorsMonth);
+  }
+}
+
+function switchStoresView(view) {
+  _storesView = view;
+  const listView   = el('stores-list-view');
+  const doorsView  = el('new-doors-view');
+  document.querySelectorAll('.view-toggle__btn').forEach(b =>
+    b.classList.toggle('active', b.textContent.trim().toLowerCase().replace(' ', '-') === view ||
+      (view === 'list' && b.textContent.includes('Stores')))
+  );
+  if (view === 'list') {
+    listView?.classList.remove('hidden');
+    doorsView?.classList.add('hidden');
+    loadStoreList();
+  } else {
+    listView?.classList.add('hidden');
+    doorsView?.classList.remove('hidden');
+    loadNewDoors(_newDoorsMonth);
+  }
+}
+window.switchStoresView = switchStoresView;
+
+let _storesSearchDebounce = null;
+function storesSearchChanged(v) {
+  _storesSearch = v;
+  clearTimeout(_storesSearchDebounce);
+  _storesSearchDebounce = setTimeout(loadStoreList, 300);
+}
+window.storesSearchChanged = storesSearchChanged;
+
+function storesFilterChanged(key, value) {
+  if (key === 'grade')        _storesGrade       = value;
+  if (key === 'visit_status') _storesVisitStatus = value;
+  if (key === 'rep')          _storesRepFilter   = value;
+  loadStoreList();
+}
+window.storesFilterChanged = storesFilterChanged;
+
+async function loadStoreList() {
+  const wrap = el('stores-list');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="skeleton-block"></div>';
+
+  const params = new URLSearchParams();
+  if (_storesSearch)      params.set('q', _storesSearch);
+  if (_storesGrade)       params.set('grade', _storesGrade);
+  if (_storesVisitStatus) params.set('visit_status', _storesVisitStatus);
+  if (_storesRepFilter)   params.set('rep_id', _storesRepFilter);
+
+  const stores = await api('GET', `/api/stores?${params}`);
+
+  if (!stores || stores.error) {
+    wrap.innerHTML = '<p class="text-muted" style="padding:var(--space-4);">Failed to load stores.</p>';
+    return;
+  }
+
+  if (stores.length === 0) {
+    wrap.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state__icon">🏪</div>
+        <div class="empty-state__title">No stores found</div>
+        <div class="empty-state__desc">${_storesSearch ? 'Try a different search.' : 'Stores sync from Zoho every 60 minutes.'}</div>
+      </div>`;
+    return;
+  }
+
+  const isManager = ['manager', 'executive'].includes(currentUser.role);
+
+  wrap.innerHTML = `
+    <div class="section-label">${stores.length} store${stores.length !== 1 ? 's' : ''}</div>
+    ${stores.map(s => `
+      <div class="card store-row" onclick="openStoreDetail(${s.id})">
+        <div class="store-row__main">
+          <span class="grade-badge grade-badge--${(s.grade || 'c').toLowerCase()}">${s.grade || '?'}</span>
+          <div class="store-row__info">
+            <div class="store-row__name">${escHtml(s.name)}</div>
+            <div class="store-row__sub text-sm text-muted">
+              ${[s.channel_type, s.state].filter(Boolean).join(' · ')}
+              ${isManager && s.rep_name ? ` · ${escHtml(s.rep_name)}` : ''}
+            </div>
+          </div>
+          <div class="store-row__visit">
+            <div class="text-sm ${visitStatusClass(s.days_since_visit)} fw-bold">
+              ${visitStatusLabel(s.days_since_visit)}
+            </div>
+            ${s.last_visit_at ? `<div class="text-xs text-muted">${new Date(s.last_visit_at).toLocaleDateString('en-AU', { day:'numeric', month:'short'})}</div>` : ''}
+          </div>
+        </div>
+      </div>`).join('')}`;
+}
+
+// ── Store Detail Sheet ────────────────────────────────────────────
+async function openStoreDetail(storeId) {
+  _storesCurrentId = storeId;
+  const sheet = el('modal-store-detail');
+  const body  = el('store-detail-body');
+
+  // Reset and open
+  el('store-detail-name').textContent  = 'Loading…';
+  el('store-detail-meta').textContent  = '';
+  el('store-detail-grade').textContent = '';
+  el('store-detail-grade').className   = 'grade-badge';
+  body.innerHTML = '<div class="skeleton-block"></div><div class="skeleton-block skeleton-block--sm"></div>';
+  sheet.classList.remove('hidden');
+  sheet.classList.add('open');
+
+  const data = await api('GET', `/api/stores/${storeId}`);
+
+  if (!data || data.error) {
+    body.innerHTML = `<p class="text-muted" style="padding:var(--space-4);">${data?.error || 'Failed to load store.'}</p>`;
+    return;
+  }
+
+  _storesCurrentData = data;
+  el('store-detail-name').textContent  = data.name;
+  el('store-detail-meta').textContent  = [data.channel_type, data.state, data.rep_name].filter(Boolean).join(' · ');
+  if (data.grade) {
+    el('store-detail-grade').textContent = data.grade;
+    el('store-detail-grade').className   = `grade-badge grade-badge--${data.grade.toLowerCase()}`;
+  }
+
+  const trendHtml = data.trend_pct !== null
+    ? `<span class="${data.trend_pct >= 0 ? 'text-success' : 'text-danger'}">${data.trend_pct >= 0 ? '+' : ''}${data.trend_pct}%</span>`
+    : '<span class="text-muted">—</span>';
+
+  const visitHistHtml = data.visit_history.length === 0
+    ? '<p class="text-muted text-sm">No visits recorded in this app yet.</p>'
+    : data.visit_history.map(v => `
+        <div class="visit-hist-row">
+          <div class="text-sm fw-bold">${new Date(v.visited_at).toLocaleDateString('en-AU', { day:'numeric', month:'short', year:'numeric' })}</div>
+          <div class="text-sm text-muted">${escHtml(v.rep_name)}</div>
+          ${v.note ? `<div class="text-sm visit-hist-note">${escHtml(v.note)}</div>` : ''}
+        </div>`).join('');
+
+  body.innerHTML = `
+    <!-- Revenue -->
+    <div class="section-label">Revenue (Last 12 Months)</div>
+    <div class="stat-grid stat-grid--3" style="margin-bottom:var(--space-4);">
+      <div class="card stat-mini">
+        <div class="stat-mini__val">${fmt(data.revenue_12m, true)}</div>
+        <div class="stat-mini__lbl">12m Total</div>
+      </div>
+      <div class="card stat-mini">
+        <div class="stat-mini__val">${trendHtml}</div>
+        <div class="stat-mini__lbl">H2 vs H1</div>
+      </div>
+      <div class="card stat-mini">
+        <div class="stat-mini__val">${data.sku_count}</div>
+        <div class="stat-mini__lbl">SKUs</div>
+      </div>
+    </div>
+
+    <!-- Order info -->
+    <div class="card" style="padding:var(--space-3);">
+      <div class="detail-kv-row">
+        <span class="text-muted text-sm">Last Order</span>
+        <span class="text-sm fw-bold">${data.last_order_date
+          ? new Date(data.last_order_date).toLocaleDateString('en-AU', {day:'numeric',month:'short',year:'numeric'})
+          : '—'}</span>
+      </div>
+      <div class="detail-kv-row">
+        <span class="text-muted text-sm">Last Visit</span>
+        <span class="text-sm fw-bold">${data.visit_history[0]
+          ? new Date(data.visit_history[0].visited_at).toLocaleDateString('en-AU', {day:'numeric',month:'short',year:'numeric'})
+          : '—'}</span>
+      </div>
+      <div class="detail-kv-row">
+        <span class="text-muted text-sm">Last Visit Note</span>
+        <span class="text-sm">${data.visit_history[0]?.note ? escHtml(data.visit_history[0].note) : '—'}</span>
+      </div>
+    </div>
+
+    <!-- Visit history -->
+    <div class="section-label">Visit History</div>
+    <div class="card" style="padding:var(--space-3);">
+      ${visitHistHtml}
+    </div>`;
+}
+
+function closeStoreDetail() {
+  const sheet = el('modal-store-detail');
+  sheet.classList.remove('open');
+  setTimeout(() => sheet.classList.add('hidden'), 300);
+  _storesCurrentId   = null;
+  _storesCurrentData = null;
+}
+
+el('store-detail-close').addEventListener('click', closeStoreDetail);
+el('store-detail-log-btn').addEventListener('click', () => {
+  const storeData = _storesCurrentData;
+  closeStoreDetail();
+  setTimeout(() => {
+    if (storeData) openLogVisitModal(storeData);
+  }, 350);
+});
+
+window.openStoreDetail = openStoreDetail;
+
+// ── New Doors ─────────────────────────────────────────────────────
+async function loadNewDoors(month) {
+  const now = new Date();
+  const curM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  if (!month) month = curM;
+  _newDoorsMonth = month;
+
+  const wrap = el('new-doors-content');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="skeleton-block"></div>';
+
+  const isManager = ['manager', 'executive'].includes(currentUser.role);
+
+  const params = new URLSearchParams({ month });
+  if (_storesRepFilter) params.set('rep_id', _storesRepFilter);
+  const data = await api('GET', `/api/stores/new-doors?${params}`);
+
+  if (!data || data.error) {
+    wrap.innerHTML = '<p class="text-muted" style="padding:var(--space-4);">Failed to load new doors.</p>';
+    return;
+  }
+
+  const monthSel = `
+    <div style="display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-4);">
+      <label class="form-label" style="margin:0;">Month</label>
+      <input type="month" class="form-input" style="width:auto;"
+             value="${month}" max="${curM}" onchange="loadNewDoors(this.value)">
+    </div>`;
+
+  const summaryCard = `
+    <div class="card dash-hero" style="text-align:center;padding:var(--space-6);">
+      <div class="dash-hero__actual">${data.totals.count}</div>
+      <div class="dash-hero__target text-muted">New Doors in ${fmtMonthLong(month)}</div>
+      <div class="text-sm text-muted" style="margin-top:var(--space-2);">Total value: ${fmt(data.totals.value)}</div>
+    </div>`;
+
+  if (data.doors.length === 0) {
+    wrap.innerHTML = monthSel + summaryCard + `
+      <div class="empty-state">
+        <div class="empty-state__icon">🚪</div>
+        <div class="empty-state__title">No new doors</div>
+        <div class="empty-state__desc">No new customers invoiced in ${fmtMonthLong(month)} (based on last 12 months of history).</div>
+      </div>`;
+    return;
+  }
+
+  // Group by rep for managers
+  let doorsHtml = '';
+  if (isManager) {
+    const byRep = {};
+    for (const d of data.doors) {
+      const k = d.rep_name || '—';
+      if (!byRep[k]) byRep[k] = [];
+      byRep[k].push(d);
+    }
+    for (const [repName, doors] of Object.entries(byRep).sort()) {
+      doorsHtml += `<div class="section-label">${escHtml(repName)} (${doors.length})</div>`;
+      doorsHtml += doors.map(d => newDoorCard(d)).join('');
+    }
+  } else {
+    doorsHtml = data.doors.map(d => newDoorCard(d)).join('');
+  }
+
+  wrap.innerHTML = monthSel + summaryCard + doorsHtml;
+}
+window.loadNewDoors = loadNewDoors;
+
+function newDoorCard(d) {
+  return `
+    <div class="card new-door-card" ${d.store_id ? `onclick="openStoreDetail(${d.store_id})" style="cursor:pointer;"` : ''}>
+      <div style="display:flex;align-items:flex-start;gap:var(--space-3);">
+        ${d.grade ? `<span class="grade-badge grade-badge--${d.grade.toLowerCase()}">${d.grade}</span>` : '<span class="grade-badge grade-badge--c">?</span>'}
+        <div style="flex:1;">
+          <div class="fw-bold">${escHtml(d.customer_name)}</div>
+          ${d.state ? `<div class="text-sm text-muted">${escHtml(d.state)}</div>` : ''}
+        </div>
+        <div class="text-right">
+          <div class="text-sm fw-bold">${fmt(d.first_order_value, true)}</div>
+          <div class="text-xs text-muted">${d.first_order_date ? new Date(d.first_order_date).toLocaleDateString('en-AU', {day:'numeric',month:'short'}) : ''}</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ── Shared utilities ──────────────────────────────────────────────
+
+function escHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 // ── Targets ───────────────────────────────────────────────────────────────────
@@ -1028,8 +1776,10 @@ async function resetPassword(userId, name) {
 }
 
 // ── Expose globals for inline onclick handlers ────────────────────────────────
-window.openUserModal  = openUserModal;
-window.resetPassword  = resetPassword;
+window.openUserModal     = openUserModal;
+window.resetPassword     = resetPassword;
+window.openLogVisitModal = openLogVisitModal;
+window.closeLogVisitModal = closeLogVisitModal;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 boot();
