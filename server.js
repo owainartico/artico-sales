@@ -37,8 +37,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/health',       require('./src/routes/health'));
 app.use('/auth',         require('./src/routes/auth'));
 app.use('/api/users',    require('./src/routes/users'));
-app.use('/api/targets',  require('./src/routes/targets'));
-app.use('/api',          require('./src/routes/zoho'));
+app.use('/api/targets',   require('./src/routes/targets'));
+app.use('/api/dashboard', require('./src/routes/dashboard'));
+app.use('/api',           require('./src/routes/zoho'));
 
 // Placeholder routes — wired in later prompts:
 // app.use('/api/stores',  require('./src/routes/stores'));

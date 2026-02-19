@@ -8,6 +8,7 @@
   <meta name="theme-color" content="#1B3A6B">
   <title>Artico Sales</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
 
@@ -93,23 +94,14 @@
       </div>
     </header>
 
+    <!-- Pull-to-refresh indicator -->
+    <div id="pull-indicator" class="pull-indicator hidden">↓ Release to refresh</div>
+
     <!-- Page content -->
     <main class="app-main">
 
-      <!-- Dashboard -->
-      <div id="page-dashboard" class="page">
-        <div class="page-header">
-          <h1 class="page-title">Dashboard</h1>
-          <span class="page-subtitle" id="dash-subtitle"></span>
-        </div>
-        <div class="skeleton-block"></div>
-        <div class="skeleton-block skeleton-block--sm"></div>
-        <div class="empty-state hidden" id="dash-empty">
-          <div class="empty-state__icon">📊</div>
-          <div class="empty-state__title">No data yet</div>
-          <div class="empty-state__desc">Revenue data will appear once Zoho sync runs.</div>
-        </div>
-      </div>
+      <!-- Dashboard — content injected by app.js -->
+      <div id="page-dashboard" class="page"></div>
 
       <!-- Visits -->
       <div id="page-visits" class="page hidden">
