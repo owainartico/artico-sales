@@ -138,4 +138,26 @@ router.post('/change-password', async (req, res) => {
   }
 });
 
+// ── GET /auth/reset-admin ─────────────────────────────────────────────────────
+// Temporary endpoint: resets admin@artico.com.au to the set-password flow.
+// Hit this from a browser to unblock a stuck admin login.
+// Remove once the admin account is fully set up.
+router.get('/reset-admin', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE users
+          SET password_hash = NULL, must_change_password = TRUE
+        WHERE email = 'admin@artico.com.au'
+        RETURNING id, email, name, role`,
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).send('No admin user found.');
+    }
+    res.send(`Admin reset OK — ${result.rows[0].email} can now set a new password at the login screen.`);
+  } catch (err) {
+    console.error('Reset-admin error:', err);
+    res.status(500).send('Reset failed: ' + err.message);
+  }
+});
+
 module.exports = router;

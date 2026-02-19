@@ -13,6 +13,9 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Trust Render's proxy so req.secure = true and secure cookies are sent correctly
+app.set('trust proxy', 1);
+
 app.use(session({
   store: new PgSession({
     pool,
