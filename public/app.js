@@ -268,11 +268,13 @@ function navigate(tab) {
 
 async function loadPage(tab) {
   switch (tab) {
-    case 'dashboard': loadDashboard(); break;
-    case 'visits':    loadVisits();    break;
-    case 'stores':    loadStores();    break;
-    case 'targets':   loadTargets();   break;
-    case 'admin':     loadAdmin();     break;
+    case 'dashboard':  loadDashboard();  break;
+    case 'visits':     loadVisits();     break;
+    case 'stores':     loadStores();     break;
+    case 'targets':    loadTargets();    break;
+    case 'admin':      loadAdmin();      break;
+    case 'products':   loadProducts();   break;
+    case 'scoreboard': loadScoreboard(); break;
   }
 }
 
@@ -1359,7 +1361,15 @@ async function openStoreDetail(storeId) {
     <div class="section-label">Visit History</div>
     <div class="card" style="padding:var(--space-3);">
       ${visitHistHtml}
-    </div>`;
+    </div>
+
+    <!-- Behaviour (managers only — loaded async) -->
+    <div id="store-behaviour-wrap"></div>`;
+
+  // Load buying behaviour classification for managers
+  if (['manager', 'executive'].includes(currentUser.role)) {
+    loadStoreBehaviour(storeId);
+  }
 }
 
 function closeStoreDetail() {
@@ -1903,6 +1913,301 @@ async function runAlerts() {
   loadDashboardAlerts();
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  PRODUCTS (manager / executive only)
+// ═══════════════════════════════════════════════════════════════════
+
+let _productsRepFilter     = '';
+let _productsGradeFilter   = '';
+let _productsChannelFilter = '';
+
+async function loadProducts() {
+  const isManager = ['manager', 'executive'].includes(currentUser.role);
+  if (!isManager) return;
+
+  const page = el('page-products');
+  page.innerHTML = `
+    <div class="page-header">
+      <h1 class="page-title">Products</h1>
+      <span class="page-subtitle">Last 12 months</span>
+    </div>
+    <div class="filter-row">
+      <select class="form-select filter-select" id="prod-grade-filter" onchange="productsFilterChanged('grade', this.value)">
+        <option value="">All Grades</option>
+        <option value="A">A</option>
+        <option value="B">B</option>
+        <option value="C">C</option>
+      </select>
+      <select class="form-select filter-select" id="prod-channel-filter" onchange="productsFilterChanged('channel_type', this.value)">
+        <option value="">All Channels</option>
+        <option value="gift">Gift</option>
+        <option value="toy">Toy</option>
+        <option value="book">Book</option>
+        <option value="garden">Garden</option>
+        <option value="homewares">Homewares</option>
+        <option value="pharmacy">Pharmacy</option>
+      </select>
+      <select class="form-select filter-select" id="prod-rep-filter" onchange="productsFilterChanged('rep_id', this.value)">
+        <option value="">All Reps</option>
+      </select>
+    </div>
+    <div id="products-wrap">
+      <div class="skeleton-block"></div>
+      <div class="skeleton-block skeleton-block--sm"></div>
+    </div>`;
+
+  _productsRepFilter = ''; _productsGradeFilter = ''; _productsChannelFilter = '';
+
+  const reps = await api('GET', '/api/users?role=rep');
+  if (reps && !reps.error) {
+    const sel = el('prod-rep-filter');
+    if (sel) reps.forEach(r => {
+      const o = document.createElement('option');
+      o.value = r.id; o.textContent = r.name;
+      sel.appendChild(o);
+    });
+  }
+
+  fetchProductsData();
+}
+
+function productsFilterChanged(key, value) {
+  if (key === 'grade')        _productsGradeFilter   = value;
+  if (key === 'channel_type') _productsChannelFilter = value;
+  if (key === 'rep_id')       _productsRepFilter     = value;
+  fetchProductsData();
+}
+window.productsFilterChanged = productsFilterChanged;
+
+async function fetchProductsData() {
+  const wrap = el('products-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="skeleton-block"></div><div class="skeleton-block skeleton-block--sm"></div>';
+
+  const params = new URLSearchParams();
+  if (_productsGradeFilter)   params.set('grade',        _productsGradeFilter);
+  if (_productsChannelFilter) params.set('channel_type', _productsChannelFilter);
+  if (_productsRepFilter)     params.set('rep_id',       _productsRepFilter);
+
+  const data = await api('GET', `/api/products?${params}`);
+  if (!data || data.error) {
+    wrap.innerHTML = '<p class="text-muted" style="padding:var(--space-4);">Failed to load product data.</p>';
+    return;
+  }
+
+  const { topSkus, brandSummary } = data;
+
+  const brandCards = brandSummary.filter(b => b.rate !== null).length === 0 ? '' : `
+    <div class="section-label">Brand Reorder Rate</div>
+    <div class="brand-summary-grid">
+      ${brandSummary.map(b => `
+        <div class="card brand-summary-card">
+          <div class="brand-summary-card__name">${escHtml(b.name)}</div>
+          <div class="brand-summary-card__stat">${b.rate !== null ? b.rate + '%' : '—'}</div>
+          <div class="brand-summary-card__lbl">Reorder Rate</div>
+          <div class="brand-summary-card__meta text-muted text-sm">${b.orderedBy} stores</div>
+        </div>`).join('')}
+    </div>`;
+
+  const skuRows = topSkus.length === 0
+    ? '<tr><td colspan="4" class="text-muted text-sm" style="padding:var(--space-4);text-align:center;">No SKU data yet — Zoho line items needed.</td></tr>'
+    : topSkus.map(s => `
+        <tr onclick="openSkuDetail(${JSON.stringify(s.itemId).replace(/"/g,'&quot;')})" style="cursor:pointer;">
+          <td class="fw-bold">${escHtml(s.name)}</td>
+          <td class="text-muted">${escHtml(s.brand || '—')}</td>
+          <td class="text-right"><span class="reorder-pill ${reorderPillClass(s.reorderRate)}">${s.reorderRate !== null ? s.reorderRate + '%' : '—'}</span></td>
+          <td class="text-right text-muted">${s.orderedBy}</td>
+        </tr>`).join('');
+
+  wrap.innerHTML = brandCards + `
+    <div class="section-label" style="margin-top:var(--space-2);">Top SKUs by Reorder Rate</div>
+    <div class="card" style="padding:0;overflow:hidden;">
+      <div class="table-scroll">
+        <table class="sku-table">
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Brand</th>
+              <th class="text-right">Reorder %</th>
+              <th class="text-right">Stores</th>
+            </tr>
+          </thead>
+          <tbody>${skuRows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function reorderPillClass(rate) {
+  if (rate === null || rate === undefined) return 'reorder-pill--low';
+  if (rate >= 70) return 'reorder-pill--high';
+  if (rate >= 40) return 'reorder-pill--mid';
+  return 'reorder-pill--low';
+}
+
+// ── SKU Detail Sheet ───────────────────────────────────────────────
+
+function openSkuDetail(itemId) {
+  const sheet = el('modal-sku-detail');
+  const body  = el('sku-detail-body');
+
+  el('sku-detail-name').textContent  = 'Loading…';
+  el('sku-detail-brand').textContent = '';
+  body.innerHTML = '<div class="skeleton-block"></div><div class="skeleton-block skeleton-block--sm"></div>';
+  sheet.classList.remove('hidden');
+  sheet.classList.add('open');
+
+  api('GET', `/api/products/sku/${encodeURIComponent(itemId)}`).then(data => {
+    if (!data || data.error) {
+      body.innerHTML = `<p class="text-muted" style="padding:var(--space-4);">${data?.error || 'Failed to load SKU.'}</p>`;
+      return;
+    }
+
+    el('sku-detail-name').textContent  = data.name || itemId;
+    el('sku-detail-brand').textContent = data.brand || '';
+
+    const stockingHtml = !data.stockingStores || data.stockingStores.length === 0
+      ? '<p class="text-muted text-sm" style="padding:var(--space-3);">None in current window.</p>'
+      : data.stockingStores.map(s => `
+          <div class="sku-store-row" onclick="closeSkuDetail(); setTimeout(() => openStoreDetail(${s.id}), 350)">
+            <span class="grade-badge grade-badge--${(s.grade || 'c').toLowerCase()}">${s.grade || '?'}</span>
+            <div class="sku-store-row__info">
+              <div class="fw-bold">${escHtml(s.name)}</div>
+              <div class="text-sm text-muted">${escHtml(s.rep_name || '—')}</div>
+            </div>
+          </div>`).join('');
+
+    const droppedHtml = !data.droppedStores || data.droppedStores.length === 0
+      ? '<p class="text-muted text-sm" style="padding:var(--space-3);">None detected.</p>'
+      : data.droppedStores.map(s => `
+          <div class="sku-store-row sku-store-row--dropped" onclick="closeSkuDetail(); setTimeout(() => openStoreDetail(${s.id}), 350)">
+            <span class="grade-badge grade-badge--${(s.grade || 'c').toLowerCase()}">${s.grade || '?'}</span>
+            <div class="sku-store-row__info">
+              <div class="fw-bold">${escHtml(s.name)}</div>
+              <div class="text-sm text-muted">${escHtml(s.rep_name || '—')}</div>
+            </div>
+            <div class="text-right text-sm text-muted">${s.lastOrderDate ? new Date(s.lastOrderDate).toLocaleDateString('en-AU', {day:'numeric',month:'short'}) : '—'}</div>
+          </div>`).join('');
+
+    body.innerHTML = `
+      <div class="section-label">Key Metrics</div>
+      <div class="stat-grid stat-grid--3">
+        <div class="card stat-mini">
+          <div class="stat-mini__val">${data.reorderRate !== null ? data.reorderRate + '%' : '—'}</div>
+          <div class="stat-mini__lbl">Reorder Rate</div>
+        </div>
+        <div class="card stat-mini">
+          <div class="stat-mini__val">${data.orderedBy}</div>
+          <div class="stat-mini__lbl">Stores</div>
+        </div>
+        <div class="card stat-mini">
+          <div class="stat-mini__val">${data.timeToReorder !== null ? data.timeToReorder + 'd' : '—'}</div>
+          <div class="stat-mini__lbl">Avg Reorder</div>
+        </div>
+      </div>
+
+      <div class="section-label" style="margin-top:var(--space-2);">Currently Stocking (${data.stockingStores?.length || 0})</div>
+      <div class="card" style="padding:0;overflow:hidden;">${stockingHtml}</div>
+
+      <div class="section-label" style="margin-top:var(--space-4);">Stopped Stocking (${data.droppedStores?.length || 0})</div>
+      <div class="card" style="padding:0;overflow:hidden;">${droppedHtml}</div>`;
+  });
+}
+
+function closeSkuDetail() {
+  const sheet = el('modal-sku-detail');
+  sheet.classList.remove('open');
+  setTimeout(() => sheet.classList.add('hidden'), 300);
+}
+
+el('sku-detail-close').addEventListener('click', closeSkuDetail);
+
+// ── Store Behaviour ────────────────────────────────────────────────
+
+async function loadStoreBehaviour(storeId) {
+  const wrap = el('store-behaviour-wrap');
+  if (!wrap) return;
+
+  const data = await api('GET', `/api/products/store/${storeId}/behaviour`);
+  if (!data || data.error) return; // Silently fail — behaviour is supplementary
+
+  const cls = (data.classification || '').toLowerCase().replace(/[^a-z]/g, '-');
+
+  const evidenceHtml = (data.evidence || []).map(e => `
+    <div class="detail-kv-row">
+      <span class="text-muted text-sm">${escHtml(e.label)}</span>
+      <span class="text-sm fw-bold">${escHtml(String(e.value))}</span>
+    </div>`).join('');
+
+  wrap.innerHTML = `
+    <div class="section-label" style="margin-top:var(--space-4);">Buying Behaviour</div>
+    <div class="card" style="padding:var(--space-3);">
+      <div style="margin-bottom:var(--space-3);">
+        <span class="behaviour-badge behaviour-badge--${cls}">${escHtml(data.classification)}</span>
+      </div>
+      ${evidenceHtml}
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SCOREBOARD
+// ═══════════════════════════════════════════════════════════════════
+
+async function loadScoreboard() {
+  const page = el('page-scoreboard');
+  page.innerHTML = `
+    <div class="page-header">
+      <h1 class="page-title">Scoreboard</h1>
+      <span class="page-subtitle">Rolling 12 months</span>
+    </div>
+    <div class="skeleton-block"></div>
+    <div class="skeleton-block skeleton-block--sm"></div>`;
+
+  const data = await api('GET', '/api/scoreboard');
+  if (!data || data.error) {
+    page.innerHTML = `
+      <div class="page-header"><h1 class="page-title">Scoreboard</h1></div>
+      <div class="empty-state">
+        <div class="empty-state__icon">📊</div>
+        <div class="empty-state__title">Could not load scoreboard</div>
+        <div class="empty-state__desc">${data?.error || 'Try again later.'}</div>
+      </div>`;
+    return;
+  }
+
+  const { reps } = data;
+
+  function scoreSection(title, metric, rankKey, fmtFn, subtitle) {
+    const sorted = [...reps].sort((a, b) => (a[rankKey] || 99) - (b[rankKey] || 99));
+    const rows = sorted.map((r, i) => {
+      const val = r[metric];
+      const displayVal = (val === null || val === undefined) ? '—' : fmtFn(val);
+      return `
+        <div class="score-row${i === 0 ? ' score-row--top' : ''}">
+          <div class="score-row__rank${i === 0 ? ' score-row__rank--gold' : ''}">${i + 1}</div>
+          <div class="score-row__name">${escHtml(r.name)}</div>
+          <div class="score-row__val">${displayVal}</div>
+        </div>`;
+    }).join('');
+    return `
+      <div class="section-label" style="margin-top:var(--space-4);">${title}</div>
+      <div class="card" style="padding:0;overflow:hidden;">
+        ${subtitle ? `<div class="score-subtitle">${subtitle}</div>` : ''}
+        <div class="score-list">${rows}</div>
+      </div>`;
+  }
+
+  page.innerHTML = `
+    <div class="page-header">
+      <h1 class="page-title">Scoreboard</h1>
+      <span class="page-subtitle">Rolling 12 months</span>
+    </div>
+    ${scoreSection('Revenue per Visit', 'revPerVisit', 'revPerVisitRank', v => fmt(v, true), 'Total revenue ÷ visits logged')}
+    ${scoreSection('Territory Growth', 'growthPct', 'growthPctRank', v => `${v >= 0 ? '+' : ''}${v}%`, 'H2 vs H1 of the 12-month window')}
+    ${scoreSection('New Doors This Month', 'newDoors', 'newDoorsRank', v => String(v), 'First-ever invoiced customers in this calendar month')}
+    ${scoreSection('Reactivation Revenue', 'reactivationPct', 'reactivationPctRank', v => `${v}%`, 'Revenue from stores re-engaging after a 3-month gap')}`;
+}
+
 // ── Expose globals for inline onclick handlers ────────────────────────────────
 window.openUserModal     = openUserModal;
 window.resetPassword     = resetPassword;
@@ -1910,6 +2215,8 @@ window.openLogVisitModal = openLogVisitModal;
 window.closeLogVisitModal = closeLogVisitModal;
 window.ackAlert          = ackAlert;
 window.runAlerts         = runAlerts;
+window.openSkuDetail     = openSkuDetail;
+window.closeSkuDetail    = closeSkuDetail;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 boot();

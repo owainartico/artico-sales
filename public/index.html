@@ -145,6 +145,12 @@
         </div>
       </div>
 
+      <!-- Products (manager / executive only) — content injected by app.js -->
+      <div id="page-products" class="page hidden"></div>
+
+      <!-- Scoreboard — content injected by app.js -->
+      <div id="page-scoreboard" class="page hidden"></div>
+
     </main>
 
     <!-- Bottom Tab Bar -->
@@ -190,6 +196,22 @@
           <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
         </svg>
         <span>Team</span>
+      </button>
+
+      <button class="tab-bar__item manager-only" data-tab="products">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+        <span>Products</span>
+      </button>
+
+      <button class="tab-bar__item" data-tab="scoreboard">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="20" x2="18" y2="10"/>
+          <line x1="12" y1="20" x2="12" y2="4"/>
+          <line x1="6" y1="20" x2="6" y2="14"/>
+        </svg>
+        <span>Scores</span>
       </button>
     </nav>
 
@@ -248,6 +270,24 @@
     </div>
     <div class="detail-sheet__footer">
       <button class="btn btn--accent btn--full" id="store-detail-log-btn">+ Log Visit</button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SKU Detail Sheet — slides up over products page
+  ══════════════════════════════════════════════════════════════ -->
+  <div id="modal-sku-detail" class="detail-sheet hidden">
+    <div class="detail-sheet__handle-bar"></div>
+    <div class="detail-sheet__header">
+      <div style="flex:1;min-width:0;">
+        <h2 class="modal__title" id="sku-detail-name" style="margin:0;font-size:1rem;"></h2>
+        <div id="sku-detail-brand" class="text-sm text-muted" style="margin-top:2px;"></div>
+      </div>
+      <button class="modal__close" id="sku-detail-close">&times;</button>
+    </div>
+    <div class="detail-sheet__body" id="sku-detail-body">
+      <div class="skeleton-block"></div>
+      <div class="skeleton-block skeleton-block--sm"></div>
     </div>
   </div>
 
