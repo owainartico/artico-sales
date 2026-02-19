@@ -287,7 +287,7 @@ async function loadDashboard(force = false) {
     ? `/api/dashboard/team${force ? '?refresh=1' : ''}`
     : `/api/dashboard/rep${force ? '?refresh=1' : ''}`;
 
-  // Show skeletons
+  // Show skeletons with informative loading message
   page.innerHTML = `
     <div class="page-header">
       <h1 class="page-title">Dashboard</h1>
@@ -296,7 +296,10 @@ async function loadDashboard(force = false) {
     <div class="skeleton-block" style="height:140px;"></div>
     <div class="skeleton-block" style="height:80px;"></div>
     <div class="skeleton-block" style="height:180px;"></div>
-    <div class="skeleton-block skeleton-block--sm"></div>`;
+    <div class="skeleton-block skeleton-block--sm"></div>
+    <p class="text-muted text-sm" style="text-align:center;padding:8px 16px;">
+      Loading revenue data from Zoho… first load may take up to 30s
+    </p>`;
 
   el('btn-dash-refresh')?.addEventListener('click', () => loadDashboard(true));
 
