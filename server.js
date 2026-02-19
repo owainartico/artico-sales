@@ -91,6 +91,10 @@ app.listen(PORT, async () => {
 
   await runMigrations();
 
+  // Load persisted Zoho refresh token from DB (falls back to env var on first run)
+  const { initZohoTokens } = require('./src/services/zoho');
+  await initZohoTokens();
+
   // Start background Zoho sync scheduler (runs every 60 minutes)
   const { startScheduler } = require('./src/services/sync');
   startScheduler();
