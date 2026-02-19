@@ -1209,3 +1209,128 @@ body {
   padding: var(--space-2) 0 var(--space-1);
   margin-top: var(--space-2);
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Prompt 6 — Alert Engine
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Alert group header ──────────────────────────────────────── */
+.alerts-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.alerts-group__label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: var(--space-1) 0;
+}
+
+.alerts-group__label--t1 { color: var(--color-danger); }
+.alerts-group__label--t2 { color: var(--color-warning); }
+
+/* ── Alert card ──────────────────────────────────────────────── */
+.alert-card {
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  border-left: 4px solid transparent;
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  transition: opacity 0.25s;
+}
+
+.alert-card--tier1 {
+  border-left-color: var(--color-danger);
+  background: #FEF2F2;
+}
+
+.alert-card--tier2 {
+  border-left-color: var(--color-warning);
+  background: #FFFBEB;
+}
+
+.alert-card__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.alert-card__type {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-muted);
+}
+
+.alert-card--tier1 .alert-card__type { color: #B91C1C; }
+.alert-card--tier2 .alert-card__type { color: #92400E; }
+
+.alert-card__title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.alert-card__meta {
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  margin-top: 1px;
+}
+
+.alert-card__store {
+  cursor: pointer;
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
+.alert-card__numbers {
+  font-size: 0.75rem;
+  color: var(--color-muted);
+}
+
+.alert-card__risk   { color: var(--color-danger); font-weight: 600; }
+.alert-card__uplift { color: var(--color-success); font-weight: 600; }
+
+/* ── Acknowledge button ──────────────────────────────────────── */
+.alert-card__ack {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  margin-top: 2px;
+}
+
+.alert-card__ack:hover {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: #fff;
+}
+
+/* ── Small button variant ────────────────────────────────────── */
+.btn--sm {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+}

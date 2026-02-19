@@ -303,7 +303,10 @@ async function loadDashboard(force = false) {
 
   el('btn-dash-refresh')?.addEventListener('click', () => loadDashboard(true));
 
-  const data = await api('GET', url);
+  const [data, alerts] = await Promise.all([
+    api('GET', url),
+    api('GET', '/api/alerts?limit=20'),
+  ]);
 
   if (!data || data.error) {
     page.innerHTML = `
@@ -319,8 +322,9 @@ async function loadDashboard(force = false) {
 
   if (_dashChart) { _dashChart.destroy(); _dashChart = null; }
 
-  if (isManager) renderTeamDashboard(page, data);
-  else           renderRepDashboard(page, data);
+  const alertList = Array.isArray(alerts) ? alerts : [];
+  if (isManager) renderTeamDashboard(page, data, alertList);
+  else           renderRepDashboard(page, data, alertList);
 }
 
 function refreshDashboard() { loadDashboard(true); }
@@ -372,7 +376,7 @@ function freshnessBanner(lastUpdated, lastSyncAt) {
 
 // ── Rep dashboard renderer ────────────────────────────────────────────────────
 
-function renderRepDashboard(page, d) {
+function renderRepDashboard(page, d, alerts = []) {
   const { hero, ytd, monthly_history, brand_breakdown, quick_stats, month } = d;
   const pc = pctClass(hero.percentage);
 
@@ -467,14 +471,17 @@ function renderRepDashboard(page, d) {
         <div class="stat-mini__val">${quick_stats.overdue_stores}</div>
         <div class="stat-mini__lbl">60d Unvisited</div>
       </div>
-    </div>`;
+    </div>
+
+    <!-- Alerts -->
+    ${renderAlertsSection(alerts)}`;
 
   renderSparkline('chart-monthly', monthly_history);
 }
 
 // ── Team dashboard renderer ───────────────────────────────────────────────────
 
-function renderTeamDashboard(page, d) {
+function renderTeamDashboard(page, d, alerts = []) {
   const { leaderboard, totals, ytd, brand_performance, new_doors_by_rep, monthly_history, month } = d;
 
   const leaderRows = leaderboard.map((r, i) => {
@@ -603,7 +610,10 @@ function renderTeamDashboard(page, d) {
     <div class="card">
       <div class="card__title">New Doors This Month</div>
       ${doorRows}
-    </div>`;
+    </div>
+
+    <!-- Alerts -->
+    ${renderAlertsSection(alerts)}`;
 
   renderSparkline('chart-monthly', monthly_history);
 }
@@ -1775,11 +1785,123 @@ async function resetPassword(userId, name) {
   loadAdmin();
 }
 
+// ── Alert rendering ───────────────────────────────────────────────────────────
+
+const ALERT_TYPE_LABELS = {
+  a_grade_visit_breach: 'A-Grade Visit Breach',
+  high_value_unvisited: 'High-Value Unvisited',
+  churn_risk:           'Churn Risk',
+  sku_gap:              'SKU Gap',
+  rep_activity_drop:    'Rep Activity Drop',
+  store_outperforming:  'Outperforming Store',
+  new_door_high_value:  'New Door',
+  brand_underindex:     'Brand Under-Index',
+  focus_line:           'Focus Line',
+};
+
+function renderAlertsSection(alerts) {
+  if (!alerts || alerts.length === 0) return '';
+
+  const tier1 = alerts.filter(a => a.tier === 1);
+  const tier2 = alerts.filter(a => a.tier === 2);
+
+  const renderCard = (a) => {
+    const typeLabel  = ALERT_TYPE_LABELS[a.alert_type] || a.alert_type;
+    const isManager  = currentUser && ['manager', 'executive'].includes(currentUser.role);
+    const repLine    = isManager && a.rep_name
+      ? `<span class="alert-card__rep">${escHtml(a.rep_name)}</span>` : '';
+    const storeLine  = a.store_name
+      ? `<span class="alert-card__store" onclick="openStoreDetail(${a.store_id})">${escHtml(a.store_name)}${a.store_grade ? ` <span class="grade-badge grade-badge--${a.store_grade.toLowerCase()}">${a.store_grade}</span>` : ''}</span>` : '';
+    const riskLine   = a.revenue_at_risk
+      ? `<span class="alert-card__risk">At risk: ${fmt(a.revenue_at_risk)}</span>` : '';
+    const upliftLine = a.estimated_uplift
+      ? `<span class="alert-card__uplift">Uplift: ${fmt(a.estimated_uplift)}</span>` : '';
+    const metaLine   = [riskLine, upliftLine].filter(Boolean).join(' · ');
+
+    return `
+      <div class="alert-card alert-card--tier${a.tier}" data-alert-id="${a.id}">
+        <div class="alert-card__body">
+          <div class="alert-card__type">${typeLabel}</div>
+          <div class="alert-card__title">${escHtml(a.alert_title)}</div>
+          ${storeLine || repLine ? `<div class="alert-card__meta">${storeLine}${repLine}</div>` : ''}
+          ${metaLine ? `<div class="alert-card__numbers">${metaLine}</div>` : ''}
+        </div>
+        <button class="alert-card__ack" onclick="ackAlert(${a.id})" title="Acknowledge">✓</button>
+      </div>`;
+  };
+
+  const tier1Html = tier1.length > 0 ? `
+    <div class="alerts-group">
+      <div class="alerts-group__label alerts-group__label--t1">Action Required (${tier1.length})</div>
+      ${tier1.map(renderCard).join('')}
+    </div>` : '';
+
+  const tier2Html = tier2.length > 0 ? `
+    <div class="alerts-group">
+      <div class="alerts-group__label alerts-group__label--t2">Insights (${tier2.length})</div>
+      ${tier2.map(renderCard).join('')}
+    </div>` : '';
+
+  const isManager = currentUser && ['manager', 'executive'].includes(currentUser.role);
+  const runBtn    = isManager ? `
+    <button class="btn btn--ghost btn--sm" onclick="runAlerts()" style="margin-top:var(--space-2);">
+      Run Alert Engine
+    </button>` : '';
+
+  return `
+    <div class="section-label" style="margin-top:var(--space-6);">
+      Alerts
+      ${runBtn}
+    </div>
+    <div id="alerts-container">
+      ${tier1Html}${tier2Html}
+      ${!tier1Html && !tier2Html ? '<p class="text-muted text-sm" style="padding:0 4px;">No active alerts.</p>' : ''}
+    </div>`;
+}
+
+async function ackAlert(alertId) {
+  const card = document.querySelector(`[data-alert-id="${alertId}"]`);
+  if (card) card.style.opacity = '0.4';
+
+  const result = await api('POST', `/api/alerts/${alertId}/acknowledge`);
+  if (!result || result.error) {
+    if (card) card.style.opacity = '';
+    toast(result?.error || 'Failed to acknowledge alert.');
+    return;
+  }
+
+  if (card) card.remove();
+
+  // Remove empty group labels
+  document.querySelectorAll('.alerts-group').forEach(g => {
+    if (!g.querySelector('.alert-card')) g.remove();
+  });
+
+  // If container is now empty, show the 'no alerts' message
+  const container = el('alerts-container');
+  if (container && !container.querySelector('.alert-card')) {
+    container.innerHTML = '<p class="text-muted text-sm" style="padding:0 4px;">No active alerts.</p>';
+  }
+}
+
+async function runAlerts() {
+  toast('Running alert engine…', null, 60000);
+  const result = await api('POST', '/api/alerts/run');
+  if (!result || result.error) {
+    toast(result?.error || 'Alert engine failed.');
+    return;
+  }
+  toast(`Alert engine complete — ${result.inserted} new alert${result.inserted !== 1 ? 's' : ''} generated.`, null, 5000);
+  loadDashboard();
+}
+
 // ── Expose globals for inline onclick handlers ────────────────────────────────
 window.openUserModal     = openUserModal;
 window.resetPassword     = resetPassword;
 window.openLogVisitModal = openLogVisitModal;
 window.closeLogVisitModal = closeLogVisitModal;
+window.ackAlert          = ackAlert;
+window.runAlerts         = runAlerts;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 boot();

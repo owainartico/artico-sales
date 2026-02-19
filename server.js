@@ -41,10 +41,8 @@ app.use('/api/targets',   require('./src/routes/targets'));
 app.use('/api/dashboard', require('./src/routes/dashboard'));
 app.use('/api/stores',    require('./src/routes/stores'));
 app.use('/api/visits',    require('./src/routes/visits'));
+app.use('/api/alerts',    require('./src/routes/alerts'));
 app.use('/api',           require('./src/routes/zoho'));
-
-// Placeholder routes — wired in later prompts:
-// app.use('/api/alerts',  require('./src/routes/alerts'));
 
 // ── SPA catch-all — serve index.html for unknown non-API paths ────────────────
 app.get('*', (req, res, next) => {
@@ -73,4 +71,16 @@ app.listen(PORT, () => {
   // Start background Zoho sync scheduler (runs every 60 minutes)
   const { startScheduler } = require('./src/services/sync');
   startScheduler();
+
+  // Schedule nightly alert engine at 02:00 AEST / AEDT
+  const cron = require('node-cron');
+  const { runAlertEngine } = require('./src/services/alertEngine');
+  cron.schedule('0 2 * * *', async () => {
+    console.log('[cron] Running nightly alert engine');
+    try {
+      await runAlertEngine();
+    } catch (err) {
+      console.error('[cron] Alert engine error:', err.message);
+    }
+  }, { timezone: 'Australia/Sydney' });
 });
