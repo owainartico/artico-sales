@@ -2181,12 +2181,17 @@ function renderAlertsSection(alerts) {
       ${tier2.map(renderCard).join('')}
     </div>` : '';
 
+  const isExec    = currentUser?.role === 'executive';
   const isManager = currentUser && ['manager', 'executive'].includes(currentUser.role);
   const runBtn    = isManager
-    ? `<button class="btn btn--ghost btn--sm" onclick="runAlerts()">Run Alert Engine</button>` : '';
+    ? `<button class="btn btn--ghost btn--sm" onclick="runAlerts()">Run Alerts</button>` : '';
+  const gradeBtn  = isExec
+    ? `<button class="btn btn--ghost btn--sm" onclick="runGrading()" style="margin-left:var(--space-2);">Run Grading</button>` : '';
+  const cacheBtn  = isExec
+    ? `<button class="btn btn--ghost btn--sm" onclick="refreshInvoiceCache()" style="margin-left:var(--space-2);">Refresh Data</button>` : '';
 
   container.innerHTML = `
-    <div class="section-label" style="margin-top:var(--space-4);">Alerts ${runBtn}</div>
+    <div class="section-label" style="margin-top:var(--space-4);">Alerts ${runBtn}${gradeBtn}${cacheBtn}</div>
     ${tier1Html}${tier2Html}`;
 }
 
@@ -2228,6 +2233,49 @@ async function runAlerts() {
   }
   toast(`Alert engine complete — ${result.inserted} new alert${result.inserted !== 1 ? 's' : ''} generated.`, null, 5000);
   loadDashboardAlerts();
+}
+
+async function runGrading() {
+  toast('Running grading engine… (may take 60s)', null, 90000);
+  const result = await api('POST', '/api/grades/run-auto');
+  if (!result || result.error) {
+    toast(result?.error || 'Grading failed.');
+    return;
+  }
+  const ag  = result.auto_grade  || {};
+  const cl  = result.classify    || {};
+  const pr  = result.promote     || {};
+  const la  = result.lapsed      || {};
+
+  if (ag.skipped) {
+    toast('Grading skipped — Zoho invoice fetch returned 0 results. Check Zoho connection.', null, 8000);
+    return;
+  }
+
+  const msg = [
+    `Graded: ${ag.graded ?? 0}`,
+    `Prospects: ${cl.prospected ?? 0}`,
+    `Promoted: ${pr.promoted ?? 0}`,
+    `Lapsed: ${la.downgraded ?? 0}`,
+    ag.errors ? `Errors: ${ag.errors}` : null,
+  ].filter(Boolean).join(' · ');
+
+  toast(`Grading done — ${msg}`, null, 8000);
+
+  // Reload dashboard to show updated grades
+  loadDashboard(true);
+}
+
+async function refreshInvoiceCache() {
+  toast('Clearing invoice cache and requesting fresh Zoho data…', null, 90000);
+  const result = await api('POST', '/api/debug/cache-refresh');
+  if (!result || result.error) {
+    toast(result?.error || 'Cache refresh failed.');
+    return;
+  }
+  toast('Cache cleared. Zoho re-fetch started in background (~60s). Dashboard will reload automatically.', null, 65000);
+  // Reload dashboard after 65s to pick up fresh data
+  setTimeout(() => loadDashboard(true), 65000);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -3001,9 +3049,11 @@ window.closeImportModal   = closeImportModal;
 window.importFileSelected = importFileSelected;
 window.runImport          = runImport;
 window.resetImportModal   = resetImportModal;
-window.submitWeeklyPlan   = submitWeeklyPlan;
+window.submitWeeklyPlan    = submitWeeklyPlan;
 window.renderIncentiveGrid = renderIncentiveGrid;
-window.exportKpiCsv       = exportKpiCsv;
+window.exportKpiCsv        = exportKpiCsv;
+window.runGrading          = runGrading;
+window.refreshInvoiceCache = refreshInvoiceCache;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 boot();

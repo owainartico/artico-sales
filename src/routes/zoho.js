@@ -10,7 +10,7 @@
 
 const express = require('express');
 const { makeZohoRequest } = require('../services/zoho');
-const { syncStores, fetchInvoices, isSyncRecentEnough } = require('../services/sync');
+const { syncStores, fetchInvoices, fetchInvoicesWithTimeout, invalidateInvoiceCache, getInvoiceCacheStats, isSyncRecentEnough } = require('../services/sync');
 const { requireRole } = require('../middleware/auth');
 const db = require('../db');
 
@@ -257,6 +257,68 @@ router.get('/debug/grading-status', requireRole('executive'), async (req, res) =
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── GET /api/debug/invoice-cache ─────────────────────────────────────────────
+// Shows current invoice cache state — no Zoho API call. Executive only.
+// If entries is empty → pre-warm hasn't completed or failed.
+
+router.get('/debug/invoice-cache', requireRole('executive'), (req, res) => {
+  const stats = getInvoiceCacheStats();
+  res.json({
+    ok: true,
+    ...stats,
+    note: 'If entries is empty, the 18m invoice cache has not been populated yet. Use POST /api/debug/cache-refresh to force reload.',
+  });
+});
+
+// ── GET /api/debug/zoho-ping ──────────────────────────────────────────────────
+// Tests Zoho token by fetching 1 recent invoice. Executive only.
+
+router.get('/debug/zoho-ping', requireRole('executive'), async (req, res) => {
+  try {
+    const to   = new Date().toISOString().slice(0, 10);
+    const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const data = await makeZohoRequest('/invoices', {
+      date_start: from, date_end: to,
+      status: 'paid', per_page: 1, page: 1,
+    });
+    res.json({
+      ok: true,
+      token_valid:   true,
+      invoices_found: data.invoices?.length || 0,
+      has_more_pages: data.page_context?.has_more_page ?? null,
+      sample_date:    data.invoices?.[0]?.date || null,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, token_valid: false, error: err.message });
+  }
+});
+
+// ── POST /api/debug/cache-refresh ────────────────────────────────────────────
+// Clears invoice cache and triggers a fresh 18m fetch. Executive only.
+// Non-blocking — responds immediately, fetch runs in background.
+// Check Render logs for "[scheduler] fetchInvoices cached" to confirm success.
+
+router.post('/debug/cache-refresh', requireRole('executive'), (req, res) => {
+  const now  = new Date();
+  const toD  = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const fromD = new Date(now.getFullYear(), now.getMonth() - 17, 1);
+  const pad  = n => String(n).padStart(2, '0');
+  const from = `${fromD.getFullYear()}-${pad(fromD.getMonth() + 1)}-01`;
+  const to   = `${toD.getFullYear()}-${pad(toD.getMonth() + 1)}-${pad(toD.getDate())}`;
+
+  invalidateInvoiceCache();
+  console.log(`[cache-refresh] Cache cleared. Re-warming ${from} to ${to}…`);
+
+  fetchInvoices(from, to)
+    .then(inv => console.log(`[cache-refresh] Done — ${inv.length} invoices loaded`))
+    .catch(err => console.error('[cache-refresh] Failed:', err.message));
+
+  res.json({
+    ok: true,
+    message: `Cache cleared. Re-warming ${from} to ${to} in background (~60s). Reload dashboard once Render logs show "fetchInvoices cached".`,
+  });
 });
 
 module.exports = router;

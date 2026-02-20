@@ -133,19 +133,13 @@ router.get('/report', requireAuth, requireRole('manager', 'executive'), async (r
 
 router.post('/run-auto', requireAuth, requireRole('executive'), async (req, res) => {
   try {
-    const [auto, prospects, promote, lapsed] = await Promise.allSettled([
-      runAutoGrading(),
-      classifyProspects(),
-      promoteActiveProspects(),
-      downgradeInactiveToProspect(),
-    ]);
-    res.json({
-      ok: true,
-      auto_grade:    auto.value    || { error: auto.reason?.message },
-      classify:      prospects.value || { error: prospects.reason?.message },
-      promote:       promote.value || { error: promote.reason?.message },
-      lapsed:        lapsed.value  || { error: lapsed.reason?.message },
-    });
+    // Run sequentially so the first fetch populates the invoice cache.
+    // Parallel execution causes a cache stampede (4 concurrent 24m Zoho fetches).
+    const auto_grade = await runAutoGrading().catch(e => ({ error: e.message }));
+    const classify   = await classifyProspects().catch(e => ({ error: e.message }));
+    const promote    = await promoteActiveProspects().catch(e => ({ error: e.message }));
+    const lapsed     = await downgradeInactiveToProspect().catch(e => ({ error: e.message }));
+    res.json({ ok: true, auto_grade, classify, promote, lapsed });
   } catch (err) {
     console.error('Run auto-grade error:', err.message);
     res.status(500).json({ error: 'Auto-grading failed' });

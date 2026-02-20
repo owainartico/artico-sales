@@ -362,9 +362,13 @@ async function runQuarterlyGrading() {
 async function classifyProspects() {
   console.log('[grading] classifyProspects: checking ungraded stores…');
 
+  // Check for stores with no 24m invoice AND no 24m visit → mark as prospect.
+  // Uses 24m visit window (matching grade criteria) not all-time visit count.
   const { rows: candidates } = await db.query(`
     SELECT s.id, s.name, s.zoho_contact_id,
-           (SELECT COUNT(*) FROM visits WHERE store_id = s.id LIMIT 1)::INTEGER AS visit_count
+           (SELECT COUNT(*) FROM visits
+            WHERE store_id = s.id AND visited_at >= NOW() - INTERVAL '24 months'
+            LIMIT 1)::INTEGER AS visit_count_24m
     FROM stores s
     WHERE s.active = TRUE AND s.grade IS NULL AND s.is_prospect = FALSE AND s.grade_locked = FALSE
   `);
@@ -375,13 +379,24 @@ async function classifyProspects() {
   }
 
   const { from, to } = get24MonthWindow();
-  const invoices = await fetchInvoicesForGrading(from, to).catch(() => []);
+  const invoices = await fetchInvoicesForGrading(from, to).catch((err) => {
+    console.error('[grading] classifyProspects: invoice fetch failed:', err.message);
+    return [];
+  });
+
+  // Safety guard: if invoices returned 0, skip — don't incorrectly prospect stores
+  // that actually have orders (Zoho may be temporarily unavailable).
+  if (invoices.length === 0 && candidates.length > 0) {
+    console.warn('[grading] classifyProspects: SKIPPING — invoice fetch returned 0 results (possible Zoho API failure).');
+    return { prospected: 0, skipped: true, reason: 'Invoice fetch returned 0 results' };
+  }
+
   const activeContacts = new Set(invoices.map(i => String(i.customer_id)));
 
   let prospected = 0;
   for (const store of candidates) {
     const hasInvoice = store.zoho_contact_id && activeContacts.has(String(store.zoho_contact_id));
-    if (!hasInvoice && store.visit_count === 0) {
+    if (!hasInvoice && store.visit_count_24m === 0) {
       await db.query(`UPDATE stores SET is_prospect = TRUE WHERE id = $1`, [store.id]);
       prospected++;
     }
@@ -397,9 +412,12 @@ async function classifyProspects() {
 async function promoteActiveProspects() {
   console.log('[grading] promoteActiveProspects: checking prospects for activity…');
 
+  // Promote a prospect if it has a 24m invoice OR a 24m visit.
   const { rows: prospects } = await db.query(`
     SELECT s.id, s.name, s.zoho_contact_id, s.rep_id,
-           (SELECT COUNT(*) FROM visits WHERE store_id = s.id LIMIT 1)::INTEGER AS visit_count
+           (SELECT COUNT(*) FROM visits
+            WHERE store_id = s.id AND visited_at >= NOW() - INTERVAL '24 months'
+            LIMIT 1)::INTEGER AS visit_count_24m
     FROM stores s
     WHERE s.active = TRUE AND s.is_prospect = TRUE
   `);
@@ -416,7 +434,7 @@ async function promoteActiveProspects() {
   let promoted = 0;
   for (const store of prospects) {
     const hasInvoice = store.zoho_contact_id && activeContacts.has(String(store.zoho_contact_id));
-    if (!hasInvoice && store.visit_count === 0) continue;
+    if (!hasInvoice && store.visit_count_24m === 0) continue;
 
     await db.query(`UPDATE stores SET is_prospect = FALSE, grade = 'C' WHERE id = $1`, [store.id]);
     await logGradeChange(store.id, null, 'C', 'Promoted from prospect — first activity recorded', 'system');

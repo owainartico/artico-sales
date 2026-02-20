@@ -478,6 +478,23 @@ function fetchInvoicesWithTimeout(fromDate, toDate, timeoutMs = DASHBOARD_FETCH_
   return Promise.race([fetchInvoices(fromDate, toDate), timer]);
 }
 
+/** Returns a summary of the current invoice cache state (safe for diagnostics). */
+function getInvoiceCacheStats() {
+  const entries = [];
+  for (const [key, entry] of _invoiceCache.entries()) {
+    const ageMs  = Date.now() - entry.ts;
+    const ttlMs  = INVOICE_CACHE_TTL - ageMs;
+    entries.push({
+      key,
+      invoice_count: entry.data.length,
+      age_seconds:   Math.round(ageMs / 1000),
+      ttl_seconds:   Math.round(Math.max(0, ttlMs) / 1000),
+      expires_at:    new Date(entry.ts + INVOICE_CACHE_TTL).toISOString(),
+    });
+  }
+  return { entries, total_keys: entries.length };
+}
+
 module.exports = {
   syncStores,
   fetchInvoices,
@@ -487,4 +504,5 @@ module.exports = {
   startScheduler,
   isSyncRecentEnough,
   invalidateInvoiceCache,
+  getInvoiceCacheStats,
 };
