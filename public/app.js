@@ -378,7 +378,7 @@ function freshnessBanner(lastUpdated, lastSyncAt) {
 // ── Rep dashboard renderer ────────────────────────────────────────────────────
 
 function renderRepDashboard(page, d) {
-  const { hero, ytd, monthly_history, brand_breakdown, quick_stats, month } = d;
+  const { hero, ytd, territory_growth, monthly_history, brand_breakdown, quick_stats, month } = d;
   const pc = pctClass(hero.percentage);
 
   const brandRows = brand_breakdown.some(b => b.actual > 0)
@@ -394,6 +394,33 @@ function renderRepDashboard(page, d) {
           </div>
         </div>`).join('')
     : `<p class="text-muted text-sm">Brand breakdown available once SKU prefixes are configured.</p>`;
+
+  const tg = territory_growth || {};
+  const tgPct = tg.growth_pct;
+  const tgClass = tgPct === null ? 'muted' : tgPct >= 0 ? 'success' : 'danger';
+  const tgLabel = tgPct === null ? '—' : `${tgPct >= 0 ? '+' : ''}${tgPct}%`;
+  const territoryCard = tg.store_count > 0
+    ? `<div class="card">
+        <div class="card__title">Territory Growth</div>
+        <div class="tg-row">
+          <div class="tg-cell">
+            <div class="stat-num">${fmt(tg.current)}</div>
+            <div class="stat-lbl">This Month</div>
+          </div>
+          <div class="tg-badge-wrap">
+            <span class="tg-badge tg-badge--${tgClass}">${tgLabel}</span>
+          </div>
+          <div class="tg-cell">
+            <div class="stat-num text-muted">${fmt(tg.ly)}</div>
+            <div class="stat-lbl">Same Mo. LY</div>
+          </div>
+        </div>
+        <div class="text-muted text-xs" style="margin-top:6px;">vs same month last year (by territory · ${tg.store_count} stores)</div>
+      </div>`
+    : `<div class="card">
+        <div class="card__title">Territory Growth</div>
+        <p class="text-muted text-sm">Territory data pending — store sync required.</p>
+      </div>`;
 
   page.innerHTML = `
     ${freshnessBanner(d.last_updated, d.last_sync_at)}
@@ -444,6 +471,9 @@ function renderRepDashboard(page, d) {
         </div>` : ''}
     </div>
 
+    <!-- Territory Growth -->
+    ${territoryCard}
+
     <!-- Sparkline -->
     <div class="card">
       <div class="card__title">Last 12 Months</div>
@@ -462,7 +492,7 @@ function renderRepDashboard(page, d) {
     <div class="stat-grid stat-grid--3">
       <div class="card stat-mini">
         <div class="stat-mini__val">${quick_stats.new_doors}</div>
-        <div class="stat-mini__lbl">New Doors</div>
+        <div class="stat-mini__lbl">New Customers</div>
       </div>
       <div class="card stat-mini">
         <div class="stat-mini__val">${quick_stats.visits_this_month}</div>
@@ -483,15 +513,21 @@ function renderRepDashboard(page, d) {
 // ── Team dashboard renderer ───────────────────────────────────────────────────
 
 function renderTeamDashboard(page, d) {
-  const { leaderboard, totals, ytd, brand_performance, new_doors_by_rep, monthly_history, month } = d;
+  const { leaderboard, totals, ytd, company_territory_growth, brand_performance, new_doors_by_rep, monthly_history, month } = d;
 
   const leaderRows = leaderboard.map((r, i) => {
     const pc = pctClass(r.percentage);
+    const tgPct = r.territory_growth_pct;
+    const tgClass = tgPct === null ? 'muted' : tgPct >= 0 ? 'success' : 'danger';
+    const tgText  = tgPct === null ? '—' : `${tgPct >= 0 ? '+' : ''}${tgPct}%`;
     return `
       <div class="leader-row">
         <div class="leader-row__rank text-muted">${i + 1}</div>
         <div class="leader-row__info">
           <div class="leader-row__name">${r.name}</div>
+          <div class="leader-row__terr text-xs text-${tgClass}" style="margin-bottom:2px;">
+            ${tgText} territory vs LY
+          </div>
           <div class="leader-row__bar">${progressBar(r.percentage, pc)}</div>
         </div>
         <div class="leader-row__nums">
@@ -579,9 +615,39 @@ function renderTeamDashboard(page, d) {
       ${progressBar(ytd.percentage)}
     </div>
 
+    <!-- Company Territory Growth -->
+    ${(() => {
+      const ctg = company_territory_growth || {};
+      const tgPct = ctg.growth_pct;
+      const tgClass = tgPct === null ? 'muted' : tgPct >= 0 ? 'success' : 'danger';
+      const tgLabel = tgPct === null ? '—' : `${tgPct >= 0 ? '+' : ''}${tgPct}%`;
+      return ctg.store_count > 0
+        ? `<div class="card">
+            <div class="card__title">Territory Growth</div>
+            <div class="tg-row">
+              <div class="tg-cell">
+                <div class="stat-num">${fmt(ctg.current)}</div>
+                <div class="stat-lbl">This Month</div>
+              </div>
+              <div class="tg-badge-wrap">
+                <span class="tg-badge tg-badge--${tgClass}">${tgLabel}</span>
+              </div>
+              <div class="tg-cell">
+                <div class="stat-num text-muted">${fmt(ctg.ly)}</div>
+                <div class="stat-lbl">Same Mo. LY</div>
+              </div>
+            </div>
+            <div class="text-muted text-xs" style="margin-top:6px;">vs same month last year (by territory · ${ctg.store_count} stores assigned)</div>
+          </div>`
+        : `<div class="card">
+            <div class="card__title">Territory Growth</div>
+            <p class="text-muted text-sm">Territory data pending — store sync required.</p>
+          </div>`;
+    })()}
+
     <!-- Company sparkline -->
     <div class="card">
-      <div class="card__title">Company Revenue — Last 12 Months</div>
+      <div class="card__title">Company Revenue — Last 18 Months</div>
       <div class="chart-wrap">
         <canvas id="chart-monthly"></canvas>
       </div>
@@ -607,9 +673,9 @@ function renderTeamDashboard(page, d) {
       </div>
     </div>
 
-    <!-- New doors -->
+    <!-- New Customers -->
     <div class="card">
-      <div class="card__title">New Doors This Month</div>
+      <div class="card__title">New Customers This Month</div>
       ${doorRows}
     </div>
 
@@ -1129,7 +1195,7 @@ async function loadStores() {
     <div class="page-header" style="margin-bottom:0;">
       <div class="view-toggle">
         <button class="view-toggle__btn ${_storesView === 'list' ? 'active' : ''}" onclick="switchStoresView('list')">Stores</button>
-        <button class="view-toggle__btn ${_storesView === 'new-doors' ? 'active' : ''}" onclick="switchStoresView('new-doors')">New Doors</button>
+        <button class="view-toggle__btn ${_storesView === 'new-doors' ? 'active' : ''}" onclick="switchStoresView('new-doors')">New Customers</button>
       </div>
     </div>
 
@@ -1423,15 +1489,15 @@ async function loadNewDoors(month) {
   const summaryCard = `
     <div class="card dash-hero" style="text-align:center;padding:var(--space-6);">
       <div class="dash-hero__actual">${data.totals.count}</div>
-      <div class="dash-hero__target text-muted">New Doors in ${fmtMonthLong(month)}</div>
+      <div class="dash-hero__target text-muted">New Customers in ${fmtMonthLong(month)}</div>
       <div class="text-sm text-muted" style="margin-top:var(--space-2);">Total value: ${fmt(data.totals.value)}</div>
     </div>`;
 
   if (data.doors.length === 0) {
     wrap.innerHTML = monthSel + summaryCard + `
       <div class="empty-state">
-        <div class="empty-state__icon">🚪</div>
-        <div class="empty-state__title">No new doors</div>
+        <div class="empty-state__icon">🏪</div>
+        <div class="empty-state__title">No new customers</div>
         <div class="empty-state__desc">No new customers invoiced in ${fmtMonthLong(month)} (based on last 12 months of history).</div>
       </div>`;
     return;
@@ -1803,7 +1869,7 @@ const ALERT_TYPE_LABELS = {
   sku_gap:              'SKU Gap',
   rep_activity_drop:    'Rep Activity Drop',
   store_outperforming:  'Outperforming Store',
-  new_door_high_value:  'New Door',
+  new_door_high_value:  'New Customer',
   brand_underindex:     'Brand Under-Index',
   focus_line:           'Focus Line',
 };
@@ -2204,7 +2270,7 @@ async function loadScoreboard() {
     </div>
     ${scoreSection('Revenue per Visit', 'revPerVisit', 'revPerVisitRank', v => fmt(v, true), 'Total revenue ÷ visits logged')}
     ${scoreSection('Territory Growth', 'growthPct', 'growthPctRank', v => `${v >= 0 ? '+' : ''}${v}%`, 'H2 vs H1 of the 12-month window')}
-    ${scoreSection('New Doors This Month', 'newDoors', 'newDoorsRank', v => String(v), 'First-ever invoiced customers in this calendar month')}
+    ${scoreSection('New Customers This Month', 'newDoors', 'newDoorsRank', v => String(v), 'First-ever invoiced customers in this calendar month')}
     ${scoreSection('Reactivation Revenue', 'reactivationPct', 'reactivationPctRank', v => `${v}%`, 'Revenue from stores re-engaging after a 3-month gap')}`;
 }
 

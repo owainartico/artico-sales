@@ -128,6 +128,44 @@ async function overdueStoreCount(repId) {
 
 // ── Invoice crunching ─────────────────────────────────────────────────────────
 
+// ── Territory growth ──────────────────────────────────────────────────────────
+
+/**
+ * Territory-based year-on-year revenue comparison.
+ * Attributes revenue to whichever rep currently owns each store (via stores.rep_id),
+ * regardless of which salesperson's name appears on the Zoho invoice.
+ *
+ * @param {Array}   invoices   – raw invoice array (must cover current month AND same month LY)
+ * @param {Set}     contactIds – Set of zoho_contact_id strings for the territory
+ * @param {string}  mFrom      – 'YYYY-MM-DD' first day of current month
+ * @param {string}  mTo        – 'YYYY-MM-DD' last day of current month
+ * @returns {{ current, ly, growth_pct, store_count }}
+ */
+function computeTerritoryGrowth(invoices, contactIds, mFrom, mTo) {
+  if (!contactIds.size) {
+    return { current: 0, ly: 0, growth_pct: null, store_count: 0 };
+  }
+
+  // Same month last year
+  const lyFrom = `${Number(mFrom.slice(0, 4)) - 1}${mFrom.slice(4)}`;
+  const lyTo   = `${Number(mTo.slice(0, 4)) - 1}${mTo.slice(4)}`;
+
+  let current = 0, ly = 0;
+  for (const inv of invoices) {
+    if (!contactIds.has(String(inv.customer_id))) continue;
+    const total = Number(inv.total || 0);
+    if (inv.date >= mFrom && inv.date <= mTo) current += total;
+    if (inv.date >= lyFrom && inv.date <= lyTo) ly += total;
+  }
+
+  return {
+    current,
+    ly,
+    growth_pct: ly > 0 ? Math.round(((current - ly) / ly) * 100) : null,
+    store_count: contactIds.size,
+  };
+}
+
 /** Sum invoices by month for a rep (spNames is an array) → { 'YYYY-MM': amount } */
 function byMonth(invoices, spNames) {
   const out = {};
@@ -189,13 +227,14 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
   if (!force) { const c = getCached(key); if (c) return c; }
 
   const spNames  = await salespersonNames(repId);
-  const months12 = lastNMonths(month, 12);
-  const { from: histFrom }  = monthBounds(months12[0]);
+  const months12 = lastNMonths(month, 12);  // sparkline window
+  const months13 = lastNMonths(month, 13);  // one extra month covers same month LY for territory
+  const { from: histFrom }  = monthBounds(months13[0]);
   const { from: mFrom, to: mTo } = monthBounds(month);
   const yearStart = `${month.slice(0, 4)}-01-01`;
 
   // ── Parallel fetches ──
-  const [invoices, mTargetRow, ytdTargets, histTargets, visits, overdue, syncAt] = await Promise.all([
+  const [invoices, mTargetRow, ytdTargets, histTargets, visits, overdue, syncAt, storeRows] = await Promise.all([
     fetchInvoices(histFrom, mTo).catch(() => []),
     db.query(`SELECT amount FROM revenue_targets WHERE rep_id=$1 AND month=$2`, [repId, month]),
     db.query(
@@ -210,6 +249,7 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
     visitsThisMonth(repId, mFrom),
     overdueStoreCount(repId),
     lastSyncAt(),
+    db.query(`SELECT zoho_contact_id FROM stores WHERE rep_id=$1 AND active=TRUE`, [repId]),
   ]);
 
   const target     = Number(mTargetRow.rows[0]?.amount || 0);
@@ -232,6 +272,10 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
     actual: actuals[m] || 0,
     target: targetByM[m] || 0,
   }));
+
+  // Territory growth — compare current month vs same month LY, by store ownership
+  const repContactIds = new Set(storeRows.rows.map(s => String(s.zoho_contact_id)));
+  const territory_growth = computeTerritoryGrowth(invoices, repContactIds, mFrom, mTo);
 
   // Brand breakdown (current month only) — dynamic from item catalog
   const mInvoices = invoices.filter(i => spNames.includes(i.salesperson_name) && i.date >= mFrom && i.date <= mTo);
@@ -258,6 +302,7 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
       target: ytd_target,
       percentage: ytd_target > 0 ? Math.round((ytd_actual / ytd_target) * 100) : null,
     },
+    territory_growth,
     monthly_history,
     brand_breakdown,
     quick_stats: {
@@ -287,7 +332,7 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   const { from: prevFrom, to: prevTo } = monthBounds(prev);
 
   // ── Parallel fetches ──
-  const [repsResult, invoices, mTargets, ytdTargets, brandMTargets, syncAt] = await Promise.all([
+  const [repsResult, invoices, mTargets, ytdTargets, brandMTargets, syncAt, storesByRepResult] = await Promise.all([
     db.query(`SELECT id, name, zoho_salesperson_id, zoho_salesperson_ids FROM users WHERE role='rep' AND active=TRUE ORDER BY name`),
     fetchInvoices(histFrom, mTo).catch(() => []),
     db.query(`SELECT rep_id, amount FROM revenue_targets WHERE month=$1`, [month]),
@@ -298,7 +343,17 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
     ),
     db.query(`SELECT brand_slug, amount FROM brand_targets WHERE month=$1`, [month]),
     lastSyncAt(),
+    db.query(
+      `SELECT rep_id, array_agg(zoho_contact_id::text) AS contact_ids
+       FROM stores WHERE active=TRUE AND rep_id IS NOT NULL GROUP BY rep_id`
+    ),
   ]);
+
+  // Build rep_id → Set<zoho_contact_id>
+  const contactsByRep = new Map();
+  for (const row of storesByRepResult.rows) {
+    contactsByRep.set(row.rep_id, new Set(row.contact_ids));
+  }
 
   const reps = repsResult.rows;
   const tByRep = {}; for (const r of mTargets.rows)  tByRep[r.rep_id]  = Number(r.amount);
@@ -321,11 +376,17 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
     const ytd_actual = Object.entries(actuals)
       .filter(([m]) => m >= yearStart.slice(0, 7) && m <= month)
       .reduce((s, [, v]) => s + v, 0);
+    const repContacts  = contactsByRep.get(rep.id) || new Set();
+    const tg = computeTerritoryGrowth(invoices, repContacts, mFrom, mTo);
     return {
       rep_id: rep.id, name: rep.name, actual, target,
       percentage: target > 0 ? Math.round((actual / target) * 100) : null,
       ytd_actual,
       ytd_target: yByRep[rep.id] || 0,
+      territory_growth_pct: tg.growth_pct,
+      territory_current:    tg.current,
+      territory_ly:         tg.ly,
+      territory_stores:     tg.store_count,
     };
   }).sort((a, b) => (b.percentage ?? -1) - (a.percentage ?? -1));
 
@@ -335,6 +396,11 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
     target:  leaderboard.reduce((s, r) => s + r.target, 0),
   };
   totals.percentage = totals.target > 0 ? Math.round((totals.actual / totals.target) * 100) : null;
+
+  // Company territory growth — union of all assigned store contacts
+  const allAssignedContacts = new Set();
+  for (const ids of contactsByRep.values()) for (const id of ids) allAssignedContacts.add(id);
+  const company_territory_growth = computeTerritoryGrowth(invoices, allAssignedContacts, mFrom, mTo);
 
   const ytd = {
     actual:  leaderboard.reduce((s, r) => s + r.ytd_actual, 0),
@@ -380,6 +446,7 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
 
   const result = {
     month, leaderboard, totals, ytd,
+    company_territory_growth,
     brand_performance, new_doors_by_rep, monthly_history,
     last_updated: new Date().toISOString(),
     last_sync_at: syncAt,

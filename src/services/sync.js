@@ -387,12 +387,13 @@ function startScheduler() {
 
   const SIXTY_MIN = 60 * 60 * 1000;
 
-  // Helper to compute the 12-month window ending at the current month
-  function get12MonthWindow() {
+  // Helper to compute a month window ending at the current month.
+  // n=13 covers same-month-LY (needed for territory growth on rep dashboards).
+  function getMonthWindow(n) {
     const now   = new Date();
     const toD   = new Date(now.getFullYear(), now.getMonth() + 1, 0); // last day of current month
-    const fromD = new Date(now.getFullYear(), now.getMonth() - 11, 1); // 1st of month 11 months ago
-    const pad   = n => String(n).padStart(2, '0');
+    const fromD = new Date(now.getFullYear(), now.getMonth() - (n - 1), 1);
+    const pad   = x => String(x).padStart(2, '0');
     return {
       fromDate: `${fromD.getFullYear()}-${pad(fromD.getMonth() + 1)}-01`,
       toDate:   `${toD.getFullYear()}-${pad(toD.getMonth() + 1)}-${pad(toD.getDate())}`,
@@ -409,8 +410,9 @@ function startScheduler() {
     }
 
     // Pre-warm invoice cache so first dashboard load is instant
+    // 13 months covers same-month LY needed for territory growth (rep dashboards)
     console.log('[scheduler] Pre-warming invoice cache...');
-    const { fromDate, toDate } = get12MonthWindow();
+    const { fromDate, toDate } = getMonthWindow(13);
     fetchInvoices(fromDate, toDate).catch((err) =>
       console.error('[scheduler] Invoice cache pre-warm failed:', err.message)
     );
@@ -431,7 +433,7 @@ function startScheduler() {
 
     // Refresh invoice cache each hour to keep data current
     console.log('[scheduler] Refreshing invoice cache...');
-    const { fromDate, toDate } = get12MonthWindow();
+    const { fromDate, toDate } = getMonthWindow(13);
     invalidateInvoiceCache();
     fetchInvoices(fromDate, toDate).catch((err) =>
       console.error('[scheduler] Invoice cache refresh failed:', err.message)

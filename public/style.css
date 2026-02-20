@@ -374,6 +374,28 @@ body {
 .leader-row__nums   { text-align: right; flex-shrink: 0; }
 .leader-row__actual { font-size: var(--text-sm); font-weight: 700; }
 .leader-row__pct    { font-size: var(--text-sm); font-weight: 600; }
+.leader-row__terr   { line-height: 1.2; }
+
+/* ── Territory Growth card ── */
+.tg-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.tg-cell { text-align: center; flex: 1; }
+.tg-badge-wrap { flex-shrink: 0; }
+.tg-badge {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 99px;
+  font-size: var(--text-lg);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.tg-badge--success { background: #D1FAE5; color: #065F46; }
+.tg-badge--danger  { background: #FEE2E2; color: #991B1B; }
+.tg-badge--muted   { background: var(--color-border); color: var(--color-muted); }
 
 /* ── Team dashboard — Brand table ── */
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
