@@ -11,8 +11,8 @@
  *   invalidateCache(key?)                     → clear one key or all
  */
 
-const db                              = require('../db');
-const { fetchInvoices, fetchItemBrandMap } = require('./sync');
+const db                                               = require('../db');
+const { fetchInvoicesWithTimeout, fetchItemBrandMap } = require('./sync');
 
 // ── In-memory cache ───────────────────────────────────────────────────────────
 
@@ -228,14 +228,14 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
 
   const spNames  = await salespersonNames(repId);
   const months12 = lastNMonths(month, 12);  // sparkline window
-  const months13 = lastNMonths(month, 13);  // one extra month covers same month LY for territory
-  const { from: histFrom }  = monthBounds(months13[0]);
+  const months18 = lastNMonths(month, 18);  // matches team dashboard + pre-warm cache key → cache hit
+  const { from: histFrom }  = monthBounds(months18[0]);
   const { from: mFrom, to: mTo } = monthBounds(month);
   const yearStart = `${month.slice(0, 4)}-01-01`;
 
   // ── Parallel fetches ──
   const [invoices, mTargetRow, ytdTargets, histTargets, visits, overdue, syncAt, storeRows] = await Promise.all([
-    fetchInvoices(histFrom, mTo).catch(() => []),
+    fetchInvoicesWithTimeout(histFrom, mTo).catch((err) => { console.error('[dashboard] rep invoice fetch failed:', err.message); return []; }),
     db.query(`SELECT amount FROM revenue_targets WHERE rep_id=$1 AND month=$2`, [repId, month]),
     db.query(
       `SELECT SUM(amount) AS total FROM revenue_targets
@@ -338,7 +338,7 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   // ── Parallel fetches ──
   const [repsResult, invoices, mTargets, ytdTargets, brandMTargets, syncAt, storesByRepResult, gradeDist, gradeTrend] = await Promise.all([
     db.query(`SELECT id, name, zoho_salesperson_id, zoho_salesperson_ids FROM users WHERE role='rep' AND active=TRUE ORDER BY name`),
-    fetchInvoices(histFrom, mTo).catch(() => []),
+    fetchInvoicesWithTimeout(histFrom, mTo).catch((err) => { console.error('[dashboard] team invoice fetch failed:', err.message); return []; }),
     db.query(`SELECT rep_id, amount FROM revenue_targets WHERE month=$1`, [month]),
     db.query(
       `SELECT rep_id, SUM(amount) AS total FROM revenue_targets

@@ -401,7 +401,8 @@ function startScheduler() {
   const SIXTY_MIN = 60 * 60 * 1000;
 
   // Helper to compute a month window ending at the last day of the current month.
-  // n=13 covers same-month-LY (needed for territory growth on rep dashboards).
+  // n=18 covers the team dashboard's 18-month history window.
+  // Both rep (13m) and team (18m) dashboards share this single cache key.
   function getMonthWindow(n) {
     const now   = new Date();
     const toD   = new Date(now.getFullYear(), now.getMonth() + 1, 0); // last day of current month
@@ -422,13 +423,14 @@ function startScheduler() {
       console.error('[scheduler] Initial store sync failed:', err.message);
     }
 
-    // Pre-warm invoice cache so first dashboard load is instant
-    // 13 months covers same-month LY needed for territory growth (rep dashboards)
-    // NOTE: grading uses a separate 24m window and manages its own fetch with timeout
-    console.log('[scheduler] Pre-warming 13m invoice cache...');
-    const { fromDate, toDate } = getMonthWindow(13);
+    // Pre-warm invoice cache with 18m window.
+    // Covers both the team dashboard (18m history) and rep dashboard (13m subset).
+    // Both dashboards use this same cache key so no live Zoho fetch on page load.
+    // NOTE: grading uses a separate 24m window and manages its own fetch with timeout.
+    console.log('[scheduler] Pre-warming 18m invoice cache...');
+    const { fromDate, toDate } = getMonthWindow(18);
     fetchInvoices(fromDate, toDate).catch((err) =>
-      console.error('[scheduler] Invoice cache pre-warm (13m) failed:', err.message)
+      console.error('[scheduler] Invoice cache pre-warm (18m) failed:', err.message)
     );
 
     // Pre-warm item brand map
@@ -445,12 +447,12 @@ function startScheduler() {
       console.error('[scheduler] Scheduled store sync failed:', err.message);
     }
 
-    // Refresh 13m invoice cache each hour to keep dashboard data current
+    // Refresh 18m invoice cache each hour to keep dashboard data current
     console.log('[scheduler] Refreshing invoice cache...');
     invalidateInvoiceCache();
-    const { fromDate, toDate } = getMonthWindow(13);
+    const { fromDate, toDate } = getMonthWindow(18);
     fetchInvoices(fromDate, toDate).catch((err) =>
-      console.error('[scheduler] Invoice cache refresh (13m) failed:', err.message)
+      console.error('[scheduler] Invoice cache refresh (18m) failed:', err.message)
     );
 
     // Refresh item brand map every hour too (brand assignments rarely change,
@@ -463,9 +465,23 @@ function startScheduler() {
   console.log('[scheduler] Store sync scheduled — runs every 60 minutes');
 }
 
+// ── Timeout-safe invoice fetch (for callers outside grading) ─────────────────
+// Wraps fetchInvoices with a timeout so a slow/hanging Zoho response never
+// blocks the dashboard. Falls back to [] on timeout or error.
+
+const DASHBOARD_FETCH_TIMEOUT_MS = 45_000; // 45s — plenty for a cache hit; safe fallback
+
+function fetchInvoicesWithTimeout(fromDate, toDate, timeoutMs = DASHBOARD_FETCH_TIMEOUT_MS) {
+  const timer = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Zoho invoice fetch timed out after ${timeoutMs / 1000}s`)), timeoutMs)
+  );
+  return Promise.race([fetchInvoices(fromDate, toDate), timer]);
+}
+
 module.exports = {
   syncStores,
   fetchInvoices,
+  fetchInvoicesWithTimeout,
   fetchSalesOrders,
   fetchItemBrandMap,
   startScheduler,
