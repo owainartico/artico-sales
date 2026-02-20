@@ -50,11 +50,11 @@ function monthBounds(ym) {
   return { from: `${y}-${mm}-01`, to: `${y}-${mm}-${ll}` };
 }
 
-/** Returns the 12 months ending at (and including) endMonth, oldest first. */
-function last12Months(endMonth) {
+/** Returns the last n months ending at (and including) endMonth, oldest first. */
+function lastNMonths(endMonth, n) {
   const [y, m] = endMonth.split('-').map(Number);
   const out = [];
-  for (let i = 11; i >= 0; i--) {
+  for (let i = n - 1; i >= 0; i--) {
     const d = new Date(y, m - 1 - i, 1);
     out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
   }
@@ -184,7 +184,7 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
   if (!force) { const c = getCached(key); if (c) return c; }
 
   const spName   = await salespersonName(repId);
-  const months12 = last12Months(month);
+  const months12 = lastNMonths(month, 12);
   const { from: histFrom }  = monthBounds(months12[0]);
   const { from: mFrom, to: mTo } = monthBounds(month);
   const yearStart = `${month.slice(0, 4)}-01-01`;
@@ -274,8 +274,8 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   const key = `team-${month}`;
   if (!force) { const c = getCached(key); if (c) return c; }
 
-  const months12 = last12Months(month);
-  const { from: histFrom } = monthBounds(months12[0]);
+  const months18 = lastNMonths(month, 18);
+  const { from: histFrom } = monthBounds(months18[0]);
   const { from: mFrom, to: mTo } = monthBounds(month);
   const yearStart  = `${month.slice(0, 4)}-01-01`;
   const prev       = prevMonth(month);
@@ -358,8 +358,8 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
     return { rep_id: rep.id, name: rep.name, count: newDoorCount(invoices, sp, mFrom, mTo) };
   });
 
-  // Monthly history for company total
-  const monthly_history = months12.map(m => {
+  // Monthly history for company total (18 months)
+  const monthly_history = months18.map(m => {
     const actual = reps.reduce((s, rep) => {
       const sp = rep.zoho_salesperson_id || rep.name;
       return s + (byMonth(invoices, sp)[m] || 0);
