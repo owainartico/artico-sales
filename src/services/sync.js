@@ -9,7 +9,7 @@
  * startScheduler()      – Starts the 60-minute background sync via setInterval.
  */
 
-const { makeZohoRequest } = require('./zoho');
+const { makeZohoRequest, makeZohoWrite } = require('./zoho');
 const db = require('../db');
 
 // ── Pagination helper ─────────────────────────────────────────────────────────
@@ -219,6 +219,8 @@ async function syncStores({ force = false } = {}) {
     }
 
     let upserted = 0;
+    const newDefaultC = []; // new stores that got default C (Zoho had no grade)
+
     for (const contact of contacts) {
       const zohoContactId = contact.contact_id;
       if (!zohoContactId) continue;
@@ -227,10 +229,9 @@ async function syncStores({ force = false } = {}) {
         contact.company_name || contact.contact_name || '(unnamed)';
       const customFields = contact.custom_fields || [];
 
-      // Grade: A / B / C
-      // TODO: cf_store_grade does not exist in Zoho yet — create the custom field,
-      //       then this will start returning values automatically.
-      const grade = getCustomField(customFields, 'cf_store_grade');
+      // Grade from Zoho — may be null if cf_store_grade is blank or not set yet.
+      // New stores with no Zoho grade default to 'C' (see COALESCE in INSERT below).
+      const zohoGrade = getCustomField(customFields, 'cf_store_grade') || null;
 
       // Channel type (confirmed api_name: cf_category)
       const channelType = getCustomField(customFields, 'cf_category');
@@ -241,20 +242,56 @@ async function syncStores({ force = false } = {}) {
       // Assigned rep on contact (confirmed api_name: cf_sales_rep)
       const repId = findRepId(getCustomField(customFields, 'cf_sales_rep'));
 
-      await db.query(
+      const { rows: [row] } = await db.query(
         `INSERT INTO stores
            (zoho_contact_id, name, channel_type, grade, state, rep_id, last_synced_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+         VALUES ($1, $2, $3, COALESCE($4, 'C'), $5, $6, NOW())
          ON CONFLICT (zoho_contact_id) DO UPDATE SET
            name           = EXCLUDED.name,
            channel_type   = EXCLUDED.channel_type,
-           grade          = EXCLUDED.grade,
+           grade          = COALESCE(EXCLUDED.grade, stores.grade),
            state          = EXCLUDED.state,
            rep_id         = EXCLUDED.rep_id,
-           last_synced_at = NOW()`,
-        [zohoContactId, name, channelType, grade, state, repId]
+           last_synced_at = NOW()
+         RETURNING id, name, zoho_contact_id, rep_id, (xmax = 0) AS is_new_insert`,
+        [zohoContactId, name, channelType, zohoGrade, state, repId]
       );
+
       upserted++;
+
+      // Track new stores that had no Zoho grade — they received the default C
+      if (row.is_new_insert && zohoGrade === null) {
+        newDefaultC.push(row);
+      }
+    }
+
+    // For each newly synced store that had no grade in Zoho:
+    // log the initial assignment and write C back to Zoho so it stays in sync.
+    let defaultCCount = 0;
+    for (const store of newDefaultC) {
+      try {
+        await db.query(
+          `INSERT INTO grade_history (store_id, old_grade, new_grade, reason, changed_by)
+           VALUES ($1, NULL, 'C', 'New customer - default grade C', 'system')`,
+          [store.id]
+        );
+
+        if (store.zoho_contact_id) {
+          makeZohoWrite('PUT', `/contacts/${store.zoho_contact_id}`, {
+            custom_fields: [{ api_name: 'cf_store_grade', value: 'C' }],
+          }).catch(err =>
+            console.error(`[sync] Zoho grade write failed for contact ${store.zoho_contact_id}:`, err.message)
+          );
+        }
+
+        defaultCCount++;
+      } catch (err) {
+        console.error(`[sync] Failed to log default grade for store ${store.id} (${store.name}):`, err.message);
+      }
+    }
+
+    if (defaultCCount > 0) {
+      console.log(`[sync] Default C grade assigned to ${defaultCCount} new store(s)`);
     }
 
     await completeSyncLog(logId, upserted);
