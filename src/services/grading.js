@@ -25,6 +25,20 @@ const db = require('../db');
 const { fetchInvoices } = require('./sync');
 const { makeZohoWrite } = require('./zoho');
 
+// ── Timeout-safe invoice fetch ────────────────────────────────────────────────
+// Grading fetches a 24m window independently of the dashboard's 13m cache.
+// Wrap with a 30s timeout so a slow Zoho response never hangs the process.
+// Returns [] on timeout or error — grading functions check for empty and skip.
+
+const GRADING_FETCH_TIMEOUT_MS = 30_000;
+
+function fetchInvoicesForGrading(fromDate, toDate) {
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Zoho invoice fetch timed out after ${GRADING_FETCH_TIMEOUT_MS / 1000}s`)), GRADING_FETCH_TIMEOUT_MS)
+  );
+  return Promise.race([fetchInvoices(fromDate, toDate), timeout]);
+}
+
 // ── Time constants ─────────────────────────────────────────────────────────────
 
 const W6  = 6  * 7 * 86_400_000;           // 6 weeks in ms
@@ -280,7 +294,7 @@ async function runAutoGrading() {
       FROM stores
       WHERE active = TRUE AND grade IS NULL AND is_prospect = FALSE AND grade_locked = FALSE
     `),
-    fetchInvoices(wFrom24, wTo).catch((err) => {
+    fetchInvoicesForGrading(wFrom24, wTo).catch((err) => {
       console.error('[grading] Auto-grade: invoice fetch failed:', err.message);
       return [];
     }),
@@ -317,7 +331,7 @@ async function runQuarterlyGrading() {
       FROM stores
       WHERE active = TRUE AND is_prospect = FALSE AND grade_locked = FALSE
     `),
-    fetchInvoices(wFrom24, wTo).catch((err) => {
+    fetchInvoicesForGrading(wFrom24, wTo).catch((err) => {
       console.error('[grading] Quarterly: invoice fetch failed:', err.message);
       return [];
     }),
@@ -361,7 +375,7 @@ async function classifyProspects() {
   }
 
   const { from, to } = get24MonthWindow();
-  const invoices = await fetchInvoices(from, to).catch(() => []);
+  const invoices = await fetchInvoicesForGrading(from, to).catch(() => []);
   const activeContacts = new Set(invoices.map(i => String(i.customer_id)));
 
   let prospected = 0;
@@ -396,7 +410,7 @@ async function promoteActiveProspects() {
   }
 
   const { from, to } = get24MonthWindow();
-  const invoices = await fetchInvoices(from, to).catch(() => []);
+  const invoices = await fetchInvoicesForGrading(from, to).catch(() => []);
   const activeContacts = new Set(invoices.map(i => String(i.customer_id)));
 
   let promoted = 0;
@@ -430,7 +444,7 @@ async function downgradeInactiveToProspect() {
       FROM stores
       WHERE active = TRUE AND grade IS NOT NULL AND is_prospect = FALSE
     `),
-    fetchInvoices(wFrom24, wTo).catch((err) => {
+    fetchInvoicesForGrading(wFrom24, wTo).catch((err) => {
       console.error('[grading] downgradeInactiveToProspect: invoice fetch failed:', err.message);
       return [];
     }),
