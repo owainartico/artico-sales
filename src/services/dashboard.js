@@ -331,8 +331,12 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   const prev       = prevMonth(month);
   const { from: prevFrom, to: prevTo } = monthBounds(prev);
 
+  // Current quarter start
+  const qMonth  = Math.floor(new Date().getMonth() / 3) * 3;
+  const qStart  = `${new Date().getFullYear()}-${String(qMonth + 1).padStart(2, '0')}-01`;
+
   // ── Parallel fetches ──
-  const [repsResult, invoices, mTargets, ytdTargets, brandMTargets, syncAt, storesByRepResult] = await Promise.all([
+  const [repsResult, invoices, mTargets, ytdTargets, brandMTargets, syncAt, storesByRepResult, gradeDist, gradeTrend] = await Promise.all([
     db.query(`SELECT id, name, zoho_salesperson_id, zoho_salesperson_ids FROM users WHERE role='rep' AND active=TRUE ORDER BY name`),
     fetchInvoices(histFrom, mTo).catch(() => []),
     db.query(`SELECT rep_id, amount FROM revenue_targets WHERE month=$1`, [month]),
@@ -347,6 +351,20 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
       `SELECT rep_id, array_agg(zoho_contact_id::text) AS contact_ids
        FROM stores WHERE active=TRUE AND rep_id IS NOT NULL GROUP BY rep_id`
     ),
+    // Grade distribution per rep
+    db.query(
+      `SELECT s.rep_id, s.grade, COUNT(*)::INTEGER AS count
+       FROM stores s WHERE s.active = TRUE AND s.rep_id IS NOT NULL
+       GROUP BY s.rep_id, s.grade`
+    ).catch(() => ({ rows: [] })),
+    // Quarterly grade trend
+    db.query(
+      `SELECT
+         SUM(CASE WHEN (old_grade='C' AND new_grade IN ('A','B')) OR (old_grade='B' AND new_grade='A') THEN 1 ELSE 0 END)::INTEGER AS upgrades,
+         SUM(CASE WHEN (old_grade='A' AND new_grade IN ('B','C')) OR (old_grade='B' AND new_grade='C') OR (old_grade IN ('A','B','C') AND new_grade IS NULL) THEN 1 ELSE 0 END)::INTEGER AS downgrades
+       FROM grade_history WHERE changed_at >= $1`,
+      [qStart]
+    ).catch(() => ({ rows: [{ upgrades: 0, downgrades: 0 }] })),
   ]);
 
   // Build rep_id → Set<zoho_contact_id>
@@ -358,6 +376,16 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   const reps = repsResult.rows;
   const tByRep = {}; for (const r of mTargets.rows)  tByRep[r.rep_id]  = Number(r.amount);
   const yByRep = {}; for (const r of ytdTargets.rows) yByRep[r.rep_id] = Number(r.total);
+
+  // Grade distribution map: rep_id → { A, B, C, ungraded }
+  const gradeDistByRep = {};
+  for (const r of gradeDist.rows) {
+    if (!gradeDistByRep[r.rep_id]) gradeDistByRep[r.rep_id] = { A: 0, B: 0, C: 0, ungraded: 0 };
+    gradeDistByRep[r.rep_id][r.grade || 'ungraded'] = r.count;
+  }
+
+  const quarterly_grade_trend = gradeTrend.rows[0] || { upgrades: 0, downgrades: 0 };
+  quarterly_grade_trend.quarter_start = qStart;
 
   /** Resolve the array of Zoho salesperson names for a rep row. */
   function repSpNames(rep) {
@@ -377,7 +405,8 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
       .filter(([m]) => m >= yearStart.slice(0, 7) && m <= month)
       .reduce((s, [, v]) => s + v, 0);
     const repContacts  = contactsByRep.get(rep.id) || new Set();
-    const tg = computeTerritoryGrowth(invoices, repContacts, mFrom, mTo);
+    const tg   = computeTerritoryGrowth(invoices, repContacts, mFrom, mTo);
+    const dist = gradeDistByRep[rep.id] || { A: 0, B: 0, C: 0, ungraded: 0 };
     return {
       rep_id: rep.id, name: rep.name, actual, target,
       percentage: target > 0 ? Math.round((actual / target) * 100) : null,
@@ -387,6 +416,7 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
       territory_current:    tg.current,
       territory_ly:         tg.ly,
       territory_stores:     tg.store_count,
+      grade_dist:           dist,
     };
   }).sort((a, b) => (b.percentage ?? -1) - (a.percentage ?? -1));
 
@@ -447,6 +477,7 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   const result = {
     month, leaderboard, totals, ytd,
     company_territory_growth,
+    quarterly_grade_trend,
     brand_performance, new_doors_by_rep, monthly_history,
     last_updated: new Date().toISOString(),
     last_sync_at: syncAt,

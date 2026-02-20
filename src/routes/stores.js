@@ -69,7 +69,7 @@ router.get('/', requireAuth, async (req, res) => {
 
     const { rows } = await db.query(`
       SELECT
-        s.id, s.name, s.grade, s.channel_type, s.state, s.zoho_contact_id,
+        s.id, s.name, s.grade, s.grade_locked, s.channel_type, s.state, s.zoho_contact_id,
         s.rep_id, u.name AS rep_name,
         lv.visited_at AS last_visit_at,
         lv.note       AS last_visit_note,
@@ -337,6 +337,37 @@ router.get('/grade-review', requireAuth, requireRole('manager', 'executive'), as
   }
 });
 
+// ── PATCH /api/stores/:id/lock-grade  (manager/exec only) ────────────────────
+
+router.patch('/:id/lock-grade', requireAuth, requireRole('manager', 'executive'), async (req, res) => {
+  const storeId = parseInt(req.params.id);
+  if (isNaN(storeId)) return res.status(400).json({ error: 'Invalid store id' });
+
+  const locked = req.body?.locked === true;
+  try {
+    const { rows } = await db.query(
+      `UPDATE stores SET grade_locked = $1 WHERE id = $2 AND active = TRUE RETURNING id, grade_locked`,
+      [locked, storeId]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Store not found' });
+
+    // Log the lock/unlock action in grade_history
+    const { logGradeChange } = require('../services/grading');
+    const { rows: storeRows } = await db.query(`SELECT grade FROM stores WHERE id = $1`, [storeId]);
+    const changedBy = req.session.userId ? String(req.session.userId) : 'user';
+    await logGradeChange(
+      storeId, storeRows[0]?.grade, storeRows[0]?.grade,
+      locked ? 'Grade manually locked' : 'Grade lock removed',
+      changedBy, locked
+    ).catch(() => {}); // non-fatal
+
+    res.json({ ok: true, store_id: storeId, grade_locked: locked });
+  } catch (err) {
+    console.error('Lock grade error:', err.message);
+    res.status(500).json({ error: 'Failed to update grade lock' });
+  }
+});
+
 // ── GET /api/stores/:id  (store detail + revenue) ────────────────────────────
 
 router.get('/:id', requireAuth, async (req, res) => {
@@ -367,6 +398,15 @@ router.get('/:id', requireAuth, async (req, res) => {
       JOIN users u ON u.id = v.rep_id
       WHERE v.store_id = $1
       ORDER BY v.visited_at DESC
+      LIMIT 10
+    `, [storeId]);
+
+    // Grade history (last 10 entries)
+    const { rows: gradeHistRows } = await db.query(`
+      SELECT id, old_grade, new_grade, reason, changed_at, changed_by, locked
+      FROM grade_history
+      WHERE store_id = $1
+      ORDER BY changed_at DESC
       LIMIT 10
     `, [storeId]);
 
@@ -415,6 +455,7 @@ router.get('/:id', requireAuth, async (req, res) => {
       id:               store.id,
       name:             store.name,
       grade:            store.grade,
+      grade_locked:     store.grade_locked || false,
       channel_type:     store.channel_type,
       state:            store.state,
       zoho_contact_id:  store.zoho_contact_id,
@@ -422,6 +463,7 @@ router.get('/:id', requireAuth, async (req, res) => {
       rep_name:         store.rep_name,
       last_synced_at:   store.last_synced_at,
       visit_history:    visitRows,
+      grade_history:    gradeHistRows,
       revenue_12m,
       trend_pct,
       sku_count:        skuSet.size,

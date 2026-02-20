@@ -47,6 +47,7 @@ app.use('/api/visits',    require('./src/routes/visits'));
 app.use('/api/alerts',    require('./src/routes/alerts'));
 app.use('/api/products',  require('./src/routes/products'));
 app.use('/api/scoreboard', require('./src/routes/scoreboard'));
+app.use('/api/grades',    require('./src/routes/grades'));
 app.use('/api',           require('./src/routes/zoho'));
 
 // ── SPA catch-all — serve index.html for unknown non-API paths ────────────────
@@ -100,6 +101,28 @@ async function runMigrations() {
   } catch (err) {
     console.error('[migrations] Failed to apply users migration:', err.message);
   }
+
+  // ── Grade system schema ──────────────────────────────────────────────────────
+  try {
+    await pool.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS grade_locked BOOLEAN NOT NULL DEFAULT FALSE;`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS grade_history (
+        id          SERIAL      PRIMARY KEY,
+        store_id    INTEGER     NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+        old_grade   CHAR(1)     CHECK (old_grade IN ('A','B','C')),
+        new_grade   CHAR(1)     CHECK (new_grade IN ('A','B','C')),
+        reason      TEXT        NOT NULL DEFAULT '',
+        changed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        changed_by  TEXT        NOT NULL DEFAULT 'system',
+        locked      BOOLEAN     NOT NULL DEFAULT FALSE
+      );
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_grade_history_store      ON grade_history(store_id);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_grade_history_changed_at ON grade_history(changed_at DESC);`);
+    console.log('[migrations] grade_history + grade_locked OK');
+  } catch (err) {
+    console.error('[migrations] Failed to apply grade schema migration:', err.message);
+  }
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
@@ -126,6 +149,29 @@ app.listen(PORT, async () => {
       await runAlertEngine();
     } catch (err) {
       console.error('[cron] Alert engine error:', err.message);
+    }
+  }, { timezone: 'Australia/Sydney' });
+
+  // Auto-grade ungraded stores 90 seconds after startup (after invoice cache warms)
+  const { runAutoGrading, runQuarterlyGrading } = require('./src/services/grading');
+  setTimeout(async () => {
+    try {
+      await runAutoGrading();
+    } catch (err) {
+      console.error('[startup] Auto-grading failed:', err.message);
+    }
+  }, 90_000);
+
+  // Quarterly reassessment — last day of Mar/Jun/Sep/Dec at 03:00 AEST
+  cron.schedule('0 3 28-31 3,6,9,12 *', async () => {
+    const now     = new Date();
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    if (now.getDate() !== lastDay) return; // only run on the actual last day
+    console.log('[cron] Running quarterly grade reassessment');
+    try {
+      await runQuarterlyGrading();
+    } catch (err) {
+      console.error('[cron] Quarterly grading error:', err.message);
     }
   }, { timezone: 'Australia/Sydney' });
 });

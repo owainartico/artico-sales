@@ -513,18 +513,29 @@ function renderRepDashboard(page, d) {
 // ── Team dashboard renderer ───────────────────────────────────────────────────
 
 function renderTeamDashboard(page, d) {
-  const { leaderboard, totals, ytd, company_territory_growth, brand_performance, new_doors_by_rep, monthly_history, month } = d;
+  const { leaderboard, totals, ytd, company_territory_growth, quarterly_grade_trend, brand_performance, new_doors_by_rep, monthly_history, month } = d;
 
   const leaderRows = leaderboard.map((r, i) => {
     const pc = pctClass(r.percentage);
     const tgPct = r.territory_growth_pct;
     const tgClass = tgPct === null ? 'muted' : tgPct >= 0 ? 'success' : 'danger';
     const tgText  = tgPct === null ? '—' : `${tgPct >= 0 ? '+' : ''}${tgPct}%`;
+    const gd = r.grade_dist || {};
+    const gradeDistHtml = (gd.A || gd.B || gd.C || gd.ungraded)
+      ? `<div class="grade-dist">
+           ${gd.A ? `<span class="grade-dist__item grade-dist__item--a">${gd.A}A</span>` : ''}
+           ${gd.B ? `<span class="grade-dist__item grade-dist__item--b">${gd.B}B</span>` : ''}
+           ${gd.C ? `<span class="grade-dist__item grade-dist__item--c">${gd.C}C</span>` : ''}
+           ${gd.ungraded ? `<span class="grade-dist__item grade-dist__item--u">${gd.ungraded}?</span>` : ''}
+         </div>` : '';
     return `
       <div class="leader-row">
         <div class="leader-row__rank text-muted">${i + 1}</div>
         <div class="leader-row__info">
-          <div class="leader-row__name">${r.name}</div>
+          <div style="display:flex;align-items:center;gap:var(--space-2);">
+            <div class="leader-row__name">${r.name}</div>
+            ${gradeDistHtml}
+          </div>
           <div class="leader-row__terr text-xs text-${tgClass}" style="margin-bottom:2px;">
             ${tgText} territory vs LY
           </div>
@@ -643,6 +654,32 @@ function renderTeamDashboard(page, d) {
             <div class="card__title">Territory Growth</div>
             <p class="text-muted text-sm">Territory data pending — store sync required.</p>
           </div>`;
+    })()}
+
+    <!-- Quarterly Grade Trend -->
+    ${(() => {
+      const gt = quarterly_grade_trend || {};
+      const net = (gt.upgrades || 0) - (gt.downgrades || 0);
+      const netClass = net > 0 ? 'success' : net < 0 ? 'danger' : 'muted';
+      const netLabel = net > 0 ? `+${net}` : String(net);
+      return `<div class="card">
+        <div class="card__title">Grade Changes This Quarter</div>
+        <div class="grade-trend-row">
+          <div class="grade-trend-cell">
+            <div class="grade-trend-num text-success">${gt.upgrades || 0}</div>
+            <div class="grade-trend-lbl">↑ Upgrades</div>
+          </div>
+          <div class="grade-trend-cell">
+            <div class="grade-trend-num text-${netClass}">${netLabel}</div>
+            <div class="grade-trend-lbl">Net</div>
+          </div>
+          <div class="grade-trend-cell">
+            <div class="grade-trend-num text-danger">${gt.downgrades || 0}</div>
+            <div class="grade-trend-lbl">↓ Downgrades</div>
+          </div>
+        </div>
+        <div class="text-xs text-muted" style="margin-top:4px;">Since ${gt.quarter_start || 'start of quarter'}</div>
+      </div>`;
     })()}
 
     <!-- Company sparkline -->
@@ -1387,6 +1424,13 @@ async function openStoreDetail(storeId) {
   if (data.grade) {
     el('store-detail-grade').textContent = data.grade;
     el('store-detail-grade').className   = `grade-badge grade-badge--${data.grade.toLowerCase()}`;
+  } else {
+    el('store-detail-grade').textContent = '?';
+    el('store-detail-grade').className   = 'grade-badge grade-badge--c';
+  }
+  // Show lock indicator in header badge
+  if (data.grade_locked) {
+    el('store-detail-grade').title = 'Grade locked — will not change automatically';
   }
 
   const trendHtml = data.trend_pct !== null
@@ -1420,7 +1464,7 @@ async function openStoreDetail(storeId) {
       </div>
     </div>
 
-    <!-- Order info -->
+    <!-- Order info + grade lock -->
     <div class="card" style="padding:var(--space-3);">
       <div class="detail-kv-row">
         <span class="text-muted text-sm">Last Order</span>
@@ -1438,6 +1482,15 @@ async function openStoreDetail(storeId) {
         <span class="text-muted text-sm">Last Visit Note</span>
         <span class="text-sm">${data.visit_history[0]?.note ? escHtml(data.visit_history[0].note) : '—'}</span>
       </div>
+      ${['manager','executive'].includes(currentUser.role) ? `
+      <div class="detail-kv-row" style="margin-top:var(--space-2);padding-top:var(--space-2);border-top:1px solid var(--color-border);">
+        <span class="text-muted text-sm">${data.grade_locked ? '🔒 Grade Locked' : '🔓 Grade Unlocked'}</span>
+        <button class="store-lock-btn ${data.grade_locked ? 'store-lock-btn--locked' : ''}"
+                id="grade-lock-btn"
+                onclick="toggleGradeLock(${data.id}, ${data.grade_locked})">
+          ${data.grade_locked ? 'Unlock' : 'Lock Grade'}
+        </button>
+      </div>` : ''}
     </div>
 
     <!-- Visit history -->
@@ -1445,6 +1498,28 @@ async function openStoreDetail(storeId) {
     <div class="card" style="padding:var(--space-3);">
       ${visitHistHtml}
     </div>
+
+    <!-- Grade history -->
+    ${data.grade_history && data.grade_history.length > 0 ? `
+    <div class="section-label">Grade History</div>
+    <div class="card" style="padding:var(--space-3);">
+      ${data.grade_history.map(h => `
+        <div class="grade-hist-row">
+          <div class="grade-hist-badges">
+            ${h.old_grade ? `<span class="grade-badge grade-badge--${h.old_grade.toLowerCase()}">${h.old_grade}</span>` : '<span class="grade-badge grade-badge--c">—</span>'}
+            <span class="grade-hist-arrow">→</span>
+            ${h.new_grade ? `<span class="grade-badge grade-badge--${h.new_grade.toLowerCase()}">${h.new_grade}</span>` : '<span class="grade-badge grade-badge--c">—</span>'}
+          </div>
+          <div class="grade-hist-info">
+            <div class="text-sm">${escHtml(h.reason || '')}</div>
+            <div class="text-xs text-muted">
+              ${new Date(h.changed_at).toLocaleDateString('en-AU', {day:'numeric',month:'short',year:'numeric'})}
+              · ${escHtml(h.changed_by || 'system')}
+              ${h.locked ? ' · 🔒' : ''}
+            </div>
+          </div>
+        </div>`).join('')}
+    </div>` : ''}
 
     <!-- Behaviour (managers only — loaded async) -->
     <div id="store-behaviour-wrap"></div>`;
@@ -1473,6 +1548,24 @@ el('store-detail-log-btn').addEventListener('click', () => {
 });
 
 window.openStoreDetail = openStoreDetail;
+
+async function toggleGradeLock(storeId, currentlyLocked) {
+  const btn = el('grade-lock-btn');
+  if (btn) btn.disabled = true;
+
+  const newLocked = !currentlyLocked;
+  const result = await api('PATCH', `/api/stores/${storeId}/lock-grade`, { locked: newLocked });
+
+  if (!result || result.error) {
+    if (btn) btn.disabled = false;
+    alert('Failed to update grade lock. Please try again.');
+    return;
+  }
+
+  // Refresh store detail to show updated state
+  openStoreDetail(storeId);
+}
+window.toggleGradeLock = toggleGradeLock;
 
 // ── New Doors ─────────────────────────────────────────────────────
 async function loadNewDoors(month) {

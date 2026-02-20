@@ -1297,6 +1297,71 @@ body {
 .gr-vm-badge--under { background: #fef9c3; color: #854d0e; }
 .gr-vm-badge--over  { background: #fee2e2; color: #991b1b; }
 
+/* ── Grade distribution (leaderboard) ──────────────────────────── */
+.grade-dist {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+.grade-dist__item {
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 99px;
+  line-height: 1.4;
+}
+.grade-dist__item--a { background: var(--grade-a); color: #fff; }
+.grade-dist__item--b { background: var(--grade-b); color: #1A1D2E; }
+.grade-dist__item--c { background: var(--color-border); color: var(--color-muted); }
+.grade-dist__item--u { background: #f3f4f6; color: #9ca3af; }
+
+/* ── Quarterly grade trend card ─────────────────────────────────── */
+.grade-trend-row {
+  display: flex;
+  gap: var(--space-4);
+  justify-content: space-around;
+  margin: var(--space-2) 0;
+}
+.grade-trend-cell { text-align: center; }
+.grade-trend-num  { font-size: 1.5rem; font-weight: 700; line-height: 1.1; }
+.grade-trend-lbl  { font-size: 0.68rem; color: var(--color-muted); margin-top: 2px; }
+
+/* ── Grade history timeline (store detail) ──────────────────────── */
+.grade-hist-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.grade-hist-row:last-child { border-bottom: none; }
+.grade-hist-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.grade-hist-arrow { font-size: 0.75rem; color: var(--color-muted); }
+.grade-hist-info  { flex: 1; min-width: 0; }
+
+/* ── Grade lock toggle (store detail) ──────────────────────────── */
+.store-lock-btn {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+.store-lock-btn--locked {
+  background: #fef3c7;
+  border-color: #fbbf24;
+  color: #92400e;
+}
+.store-lock-btn:disabled { opacity: 0.5; }
+
 /* ── Textarea ──────────────────────────────────────────────────── */
 .form-textarea {
   resize: vertical;

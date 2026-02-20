@@ -131,6 +131,44 @@ async function getAccessToken() {
   return refreshAccessToken();
 }
 
+// ── Zoho API write helper ─────────────────────────────────────────────────────
+
+/**
+ * Make an authenticated write request (PUT/POST/PATCH) to the Zoho Books API.
+ * Body is serialised as JSON. Retries once on 401.
+ */
+async function makeZohoWrite(method, endpoint, body = {}) {
+  const orgId = process.env.ZOHO_ORG_ID || '689159620';
+  const url   = `${ZOHO_BASE_URL}${endpoint}?organization_id=${orgId}`;
+
+  const doFetch = (token) =>
+    fetch(url, {
+      method,
+      headers: {
+        Authorization:  `Zoho-oauthtoken ${token}`,
+        'Content-Type': 'application/json',
+        Accept:         'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+  let token  = await getAccessToken();
+  let result = await doFetch(token);
+
+  if (result.status === 401) {
+    console.log('[zoho] 401 — refreshing token and retrying');
+    token  = await refreshAccessToken();
+    result = await doFetch(token);
+  }
+
+  if (!result.ok) {
+    const text = await result.text();
+    throw new Error(`Zoho API ${method} ${result.status} on ${endpoint}: ${text}`);
+  }
+
+  return result.json();
+}
+
 // ── Zoho API request helper ───────────────────────────────────────────────────
 
 /**
@@ -167,4 +205,4 @@ async function makeZohoRequest(endpoint, params = {}) {
   return result.json();
 }
 
-module.exports = { initZohoTokens, refreshAccessToken, makeZohoRequest };
+module.exports = { initZohoTokens, refreshAccessToken, makeZohoRequest, makeZohoWrite };
