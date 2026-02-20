@@ -47,7 +47,7 @@ router.get('/', requireAuth, async (req, res) => {
 
     // All active reps
     const { rows: reps } = await db.query(
-      `SELECT id, name, zoho_salesperson_id FROM users
+      `SELECT id, name, zoho_salesperson_id, zoho_salesperson_ids FROM users
        WHERE role = 'rep' AND active = TRUE ORDER BY name`
     );
 
@@ -79,8 +79,10 @@ router.get('/', requireAuth, async (req, res) => {
     const repById   = {};
     for (const r of reps) {
       repById[r.id] = r;
-      if (r.zoho_salesperson_id) repByName[r.zoho_salesperson_id] = r.id;
-      repByName[r.name] = r.id;
+      const spNames = (Array.isArray(r.zoho_salesperson_ids) && r.zoho_salesperson_ids.length)
+        ? r.zoho_salesperson_ids
+        : (r.zoho_salesperson_id ? [r.zoho_salesperson_id] : [r.name]);
+      for (const sp of spNames) repByName[sp] = r.id;
     }
 
     // Per-rep invoice buckets

@@ -160,12 +160,14 @@ router.get('/new-doors', requireAuth, async (req, res) => {
 
     // Load reps for name lookup
     const { rows: reps } = await db.query(
-      `SELECT id, name, zoho_salesperson_id FROM users WHERE role = 'rep' AND active = TRUE`
+      `SELECT id, name, zoho_salesperson_id, zoho_salesperson_ids FROM users WHERE role = 'rep' AND active = TRUE`
     );
     const repBySp = {};
     for (const r of reps) {
-      if (r.zoho_salesperson_id) repBySp[r.zoho_salesperson_id] = r;
-      repBySp[r.name] = r;
+      const spNames = (Array.isArray(r.zoho_salesperson_ids) && r.zoho_salesperson_ids.length)
+        ? r.zoho_salesperson_ids
+        : (r.zoho_salesperson_id ? [r.zoho_salesperson_id] : [r.name]);
+      for (const sp of spNames) repBySp[sp] = r;
     }
 
     const doors = [];

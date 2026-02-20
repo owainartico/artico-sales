@@ -85,12 +85,17 @@ function runRateStats(ym, actual, target) {
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
-async function salespersonName(repId) {
+/** Returns all Zoho salesperson names for a rep (array — supports multi-name users). */
+async function salespersonNames(repId) {
   const { rows } = await db.query(
-    `SELECT name, zoho_salesperson_id FROM users WHERE id = $1`, [repId]
+    `SELECT name, zoho_salesperson_id, zoho_salesperson_ids FROM users WHERE id = $1`, [repId]
   );
-  if (!rows[0]) return null;
-  return rows[0].zoho_salesperson_id || rows[0].name;
+  if (!rows[0]) return [];
+  const u = rows[0];
+  if (Array.isArray(u.zoho_salesperson_ids) && u.zoho_salesperson_ids.length) {
+    return u.zoho_salesperson_ids;
+  }
+  return [u.zoho_salesperson_id || u.name];
 }
 
 async function lastSyncAt() {
@@ -123,11 +128,11 @@ async function overdueStoreCount(repId) {
 
 // ── Invoice crunching ─────────────────────────────────────────────────────────
 
-/** Sum invoices by month for one salesperson → { 'YYYY-MM': amount } */
-function byMonth(invoices, spName) {
+/** Sum invoices by month for a rep (spNames is an array) → { 'YYYY-MM': amount } */
+function byMonth(invoices, spNames) {
   const out = {};
   for (const inv of invoices) {
-    if (inv.salesperson_name !== spName) continue;
+    if (!spNames.includes(inv.salesperson_name)) continue;
     const m = (inv.date || '').slice(0, 7);
     if (m) out[m] = (out[m] || 0) + Number(inv.total || 0);
   }
@@ -160,16 +165,16 @@ function buildBrandTotals(invoices, itemBrandMap) {
  * Approximate new-door count: customers invoiced this month by this rep
  * that don't appear in any earlier invoice in the dataset (best-effort, 12-month window).
  */
-function newDoorCount(invoices, spName, monthFrom, monthTo) {
-  if (!spName) return 0;
+function newDoorCount(invoices, spNames, monthFrom, monthTo) {
+  if (!spNames.length) return 0;
   const thisMonth = new Set(
     invoices
-      .filter(i => i.salesperson_name === spName && i.date >= monthFrom && i.date <= monthTo)
+      .filter(i => spNames.includes(i.salesperson_name) && i.date >= monthFrom && i.date <= monthTo)
       .map(i => String(i.customer_id)).filter(Boolean)
   );
   const prior = new Set(
     invoices
-      .filter(i => i.salesperson_name === spName && i.date < monthFrom)
+      .filter(i => spNames.includes(i.salesperson_name) && i.date < monthFrom)
       .map(i => String(i.customer_id)).filter(Boolean)
   );
   let n = 0;
@@ -183,7 +188,7 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
   const key = `rep-${repId}-${month}`;
   if (!force) { const c = getCached(key); if (c) return c; }
 
-  const spName   = await salespersonName(repId);
+  const spNames  = await salespersonNames(repId);
   const months12 = lastNMonths(month, 12);
   const { from: histFrom }  = monthBounds(months12[0]);
   const { from: mFrom, to: mTo } = monthBounds(month);
@@ -210,7 +215,7 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
   const target     = Number(mTargetRow.rows[0]?.amount || 0);
   const ytd_target = Number(ytdTargets.rows[0]?.total  || 0);
 
-  const actuals    = byMonth(invoices, spName || '');
+  const actuals    = byMonth(invoices, spNames);
   const actual     = actuals[month] || 0;
   const percentage = target > 0 ? Math.round((actual / target) * 100) : null;
 
@@ -229,7 +234,7 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
   }));
 
   // Brand breakdown (current month only) — dynamic from item catalog
-  const mInvoices = invoices.filter(i => i.salesperson_name === (spName || '') && i.date >= mFrom && i.date <= mTo);
+  const mInvoices = invoices.filter(i => spNames.includes(i.salesperson_name) && i.date >= mFrom && i.date <= mTo);
   const itemBrandMap = await fetchItemBrandMap().catch(() => new Map());
   const brandTotalsMap = buildBrandTotals(mInvoices, itemBrandMap);
   const totalBrandRev = Object.values(brandTotalsMap).reduce((s, v) => s + v, 0);
@@ -256,7 +261,7 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
     monthly_history,
     brand_breakdown,
     quick_stats: {
-      new_doors:          newDoorCount(invoices, spName || '', mFrom, mTo),
+      new_doors:          newDoorCount(invoices, spNames, mFrom, mTo),
       visits_this_month:  visits,
       overdue_stores:     overdue,
     },
@@ -283,7 +288,7 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
 
   // ── Parallel fetches ──
   const [repsResult, invoices, mTargets, ytdTargets, brandMTargets, syncAt] = await Promise.all([
-    db.query(`SELECT id, name, zoho_salesperson_id FROM users WHERE role='rep' AND active=TRUE ORDER BY name`),
+    db.query(`SELECT id, name, zoho_salesperson_id, zoho_salesperson_ids FROM users WHERE role='rep' AND active=TRUE ORDER BY name`),
     fetchInvoices(histFrom, mTo).catch(() => []),
     db.query(`SELECT rep_id, amount FROM revenue_targets WHERE month=$1`, [month]),
     db.query(
@@ -299,10 +304,18 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   const tByRep = {}; for (const r of mTargets.rows)  tByRep[r.rep_id]  = Number(r.amount);
   const yByRep = {}; for (const r of ytdTargets.rows) yByRep[r.rep_id] = Number(r.total);
 
+  /** Resolve the array of Zoho salesperson names for a rep row. */
+  function repSpNames(rep) {
+    if (Array.isArray(rep.zoho_salesperson_ids) && rep.zoho_salesperson_ids.length) {
+      return rep.zoho_salesperson_ids;
+    }
+    return [rep.zoho_salesperson_id || rep.name];
+  }
+
   // Leaderboard
   const leaderboard = reps.map(rep => {
-    const sp = rep.zoho_salesperson_id || rep.name;
-    const actuals = byMonth(invoices, sp);
+    const spNames = repSpNames(rep);
+    const actuals = byMonth(invoices, spNames);
     const actual  = actuals[month] || 0;
     const target  = tByRep[rep.id] || 0;
     const ytd_actual = Object.entries(actuals)
@@ -354,15 +367,13 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
 
   // New doors by rep (12-month approximation)
   const new_doors_by_rep = reps.map(rep => {
-    const sp = rep.zoho_salesperson_id || rep.name;
-    return { rep_id: rep.id, name: rep.name, count: newDoorCount(invoices, sp, mFrom, mTo) };
+    return { rep_id: rep.id, name: rep.name, count: newDoorCount(invoices, repSpNames(rep), mFrom, mTo) };
   });
 
   // Monthly history for company total (18 months)
   const monthly_history = months18.map(m => {
     const actual = reps.reduce((s, rep) => {
-      const sp = rep.zoho_salesperson_id || rep.name;
-      return s + (byMonth(invoices, sp)[m] || 0);
+      return s + (byMonth(invoices, repSpNames(rep))[m] || 0);
     }, 0);
     return { month: m, actual, target: 0 }; // target aggregation not stored by month-company
   });

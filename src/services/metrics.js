@@ -47,13 +47,18 @@ function yearToDateBounds(month) {
  * Invoices carry a top-level `salesperson_name` field (confirmed via /api/zoho-test).
  * When creating users, store that exact string in the zoho_salesperson_id column.
  */
-async function getRepSalespersonName(repId) {
+/** Returns array of Zoho salesperson names for a rep (supports multi-name users). */
+async function getRepSalespersonNames(repId) {
   const { rows } = await db.query(
-    `SELECT name, zoho_salesperson_id FROM users WHERE id = $1`,
+    `SELECT name, zoho_salesperson_id, zoho_salesperson_ids FROM users WHERE id = $1`,
     [repId]
   );
-  if (!rows[0]) return null;
-  return rows[0].zoho_salesperson_id || rows[0].name;
+  if (!rows[0]) return [];
+  const u = rows[0];
+  if (Array.isArray(u.zoho_salesperson_ids) && u.zoho_salesperson_ids.length) {
+    return u.zoho_salesperson_ids;
+  }
+  return [u.zoho_salesperson_id || u.name];
 }
 
 async function getRepTarget(repId, month) {
@@ -99,8 +104,8 @@ async function getRepYtdTarget(repId, month) {
  * @returns {{ actual, target, percentage, ytd_actual, ytd_target }}
  */
 async function getRepRevenue(repId, month) {
-  const salespersonName = await getRepSalespersonName(repId);
-  if (!salespersonName) {
+  const spNames = await getRepSalespersonNames(repId);
+  if (!spNames.length) {
     return { actual: 0, target: 0, percentage: null, ytd_actual: 0, ytd_target: 0 };
   }
 
@@ -115,7 +120,7 @@ async function getRepRevenue(repId, month) {
   ]);
 
   const repInvoices = invoices.filter(
-    (inv) => inv.salesperson_name === salespersonName
+    (inv) => spNames.includes(inv.salesperson_name)
   );
 
   const ytd_actual = repInvoices.reduce(
@@ -270,8 +275,8 @@ async function isNewDoor(zohoContactId, checkDate) {
  * @returns {Promise<Array<{ zoho_contact_id, store_name, store_id, first_order_date }>>}
  */
 async function getNewDoors(repId, fromDate, toDate) {
-  const salespersonName = await getRepSalespersonName(repId);
-  if (!salespersonName) return [];
+  const spNames = await getRepSalespersonNames(repId);
+  if (!spNames.length) return [];
 
   const [periodInvoices, periodOrders] = await Promise.all([
     fetchInvoices(fromDate, toDate),
@@ -280,7 +285,7 @@ async function getNewDoors(repId, fromDate, toDate) {
 
   // Documents belonging to this rep in the period
   const repDocs = [...periodInvoices, ...periodOrders].filter(
-    (doc) => doc.salesperson_name === salespersonName
+    (doc) => spNames.includes(doc.salesperson_name)
   );
 
   // Unique customer IDs touched by this rep in the period
