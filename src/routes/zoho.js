@@ -106,81 +106,77 @@ router.post('/sync', async (req, res) => {
 router.get('/debug-deanne', requireRole('executive'), async (req, res) => {
   const out = {};
 
-  // 1. Deanne's DB record
-  try {
-    const { rows } = await db.query(
-      `SELECT id, name, email, role, active, zoho_salesperson_id, zoho_salesperson_ids
-       FROM users WHERE name ILIKE '%deanne%' ORDER BY name`
-    );
-    out.deanne_db = rows;
-  } catch (err) {
-    out.deanne_db_error = err.message;
-  }
-
-  // 2. All users — salesperson ID columns
-  try {
-    const { rows } = await db.query(
-      `SELECT id, name, role, active, zoho_salesperson_id, zoho_salesperson_ids
-       FROM users WHERE active = TRUE ORDER BY name`
-    );
-    out.all_users = rows;
-  } catch (err) {
-    out.all_users_error = err.message;
-  }
-
-  // 3. Does zoho_salesperson_ids column exist?
+  // 1. zoho_salesperson_ids column exists?
   try {
     const { rows } = await db.query(
       `SELECT column_name, data_type FROM information_schema.columns
        WHERE table_name = 'users' AND column_name = 'zoho_salesperson_ids'`
     );
-    out.column_exists = rows.length > 0 ? rows[0] : 'COLUMN MISSING';
+    out.column_exists = rows.length > 0 ? rows[0] : 'COLUMN MISSING — migration has not run yet';
   } catch (err) {
     out.column_check_error = err.message;
   }
 
-  // 4. Sample invoices from Zoho — show distinct salesperson_name values (last 30d)
-  try {
-    const now     = new Date();
-    const to      = now.toISOString().slice(0, 10);
-    const fromD   = new Date(now); fromD.setDate(fromD.getDate() - 30);
-    const from    = fromD.toISOString().slice(0, 10);
-    const invoices = await fetchInvoices(from, to);
-    const spNames = [...new Set(invoices.map(i => i.salesperson_name).filter(Boolean))].sort();
-    out.zoho_salesperson_names_last_30d = spNames;
-    out.sample_invoices_count = invoices.length;
-    // Show first 5 invoices with their salesperson_name
-    out.sample_invoices = invoices.slice(0, 5).map(i => ({
-      invoice_id:       i.invoice_id,
-      date:             i.date,
-      customer_name:    i.customer_name,
-      salesperson_name: i.salesperson_name,
-      total:            i.total,
-    }));
-  } catch (err) {
-    out.zoho_invoices_error = err.message;
-  }
-
-  // 5. Try salespersonNames() logic for Deanne
+  // 2. All active users with their salesperson mapping
   try {
     const { rows } = await db.query(
-      `SELECT name, zoho_salesperson_id, zoho_salesperson_ids
-       FROM users WHERE name ILIKE '%deanne%' LIMIT 1`
+      `SELECT id, name, email, role, active, zoho_salesperson_id, zoho_salesperson_ids
+       FROM users ORDER BY name`
     );
-    if (rows[0]) {
-      const u = rows[0];
-      let resolvedNames;
-      if (Array.isArray(u.zoho_salesperson_ids) && u.zoho_salesperson_ids.length) {
-        resolvedNames = u.zoho_salesperson_ids;
-      } else {
-        resolvedNames = [u.zoho_salesperson_id || u.name];
+    out.all_users = rows.map(u => ({
+      id:   u.id,
+      name: u.name,
+      email: u.email,
+      role: u.role,
+      active: u.active,
+      zoho_salesperson_id:  u.zoho_salesperson_id,
+      zoho_salesperson_ids: u.zoho_salesperson_ids,
+      // Show what the matching code will actually use
+      resolved_sp_names: (() => {
+        if (Array.isArray(u.zoho_salesperson_ids) && u.zoho_salesperson_ids.length) {
+          return u.zoho_salesperson_ids;
+        }
+        return [u.zoho_salesperson_id || u.name];
+      })(),
+    }));
+  } catch (err) {
+    out.all_users_error = err.message;
+  }
+
+  // 3. Fetch recent invoices and show ALL distinct salesperson_name values from Zoho
+  //    + per-name invoice count + total revenue (last 60 days)
+  try {
+    const now   = new Date();
+    const to    = now.toISOString().slice(0, 10);
+    const fromD = new Date(now.getFullYear(), now.getMonth() - 1, 1); // start of last month
+    const from  = fromD.toISOString().slice(0, 10);
+    const invoices = await fetchInvoices(from, to);
+
+    // Distinct salesperson names with counts/totals
+    const spMap = new Map();
+    for (const inv of invoices) {
+      const sp = inv.salesperson_name || '(none)';
+      if (!spMap.has(sp)) spMap.set(sp, { count: 0, total: 0 });
+      const e = spMap.get(sp);
+      e.count++;
+      e.total += Number(inv.total || 0);
+    }
+    out.zoho_salesperson_names = [...spMap.entries()]
+      .map(([name, { count, total }]) => ({ name, invoice_count: count, total: Math.round(total) }))
+      .sort((a, b) => b.total - a.total);
+    out.zoho_total_invoices = invoices.length;
+    out.zoho_date_range = { from, to };
+
+    // For each resolved_sp_names in all_users, count matching invoices
+    if (out.all_users) {
+      for (const u of out.all_users) {
+        const matched = invoices.filter(i => u.resolved_sp_names.includes(i.salesperson_name));
+        u.matched_invoices = matched.length;
+        u.matched_revenue  = Math.round(matched.reduce((s, i) => s + Number(i.total || 0), 0));
       }
-      out.resolved_sp_names = resolvedNames;
-    } else {
-      out.resolved_sp_names = 'Deanne not found in DB';
     }
   } catch (err) {
-    out.resolved_sp_names_error = err.message;
+    out.zoho_invoices_error = err.message;
   }
 
   res.json(out);

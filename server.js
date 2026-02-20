@@ -84,18 +84,19 @@ async function runMigrations() {
   }
 
   try {
-    await pool.query(`
-      ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS zoho_salesperson_ids TEXT[];
-    `);
-    // Set Deanne Burrows to cover both "Owain ap Rees" and "Sally ap Rees" Zoho names
-    await pool.query(`
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS zoho_salesperson_ids TEXT[];`);
+
+    // Deanne Burrows covers both "Owain ap Rees" and "Sally ap Rees" in Zoho.
+    // Match by name (case-insensitive) — more robust than email.
+    // Always overwrite so this re-runs safely even if previously set wrong.
+    const { rowCount } = await pool.query(`
       UPDATE users
-      SET zoho_salesperson_ids = ARRAY['Owain ap Rees', 'Sally ap Rees']
-      WHERE email = 'deanne@artico.net.au'
-        AND (zoho_salesperson_ids IS NULL OR zoho_salesperson_ids = '{}')
+      SET    zoho_salesperson_id  = 'Owain ap Rees',
+             zoho_salesperson_ids = ARRAY['Owain ap Rees', 'Sally ap Rees'],
+             role                 = 'rep'
+      WHERE  name ILIKE '%deanne%'
     `);
-    console.log('[migrations] users.zoho_salesperson_ids OK');
+    console.log(`[migrations] users.zoho_salesperson_ids OK — Deanne rows updated: ${rowCount}`);
   } catch (err) {
     console.error('[migrations] Failed to apply users migration:', err.message);
   }
