@@ -135,9 +135,14 @@
       <div id="page-admin" class="page hidden">
         <div class="page-header">
           <h1 class="page-title">Team</h1>
-          <button class="btn btn--accent" id="btn-add-user" style="padding:0.5rem 1rem;font-size:0.875rem;">
-            + Add User
-          </button>
+          <div style="display:flex;gap:0.5rem;">
+            <button class="btn btn--ghost btn--sm" id="btn-import-csv" onclick="openImportModal()" style="padding:0.5rem 1rem;font-size:0.875rem;">
+              Import CSV
+            </button>
+            <button class="btn btn--accent" id="btn-add-user" style="padding:0.5rem 1rem;font-size:0.875rem;">
+              + Add User
+            </button>
+          </div>
         </div>
 
         <div id="user-list">
@@ -331,6 +336,58 @@
           <button type="submit" class="btn btn--accent" id="user-form-submit">Save</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Import Visits CSV Modal
+  ══════════════════════════════════════════════════════════════ -->
+  <div id="modal-import" class="fullscreen-modal hidden">
+    <div class="fullscreen-modal__header">
+      <button class="modal__close" onclick="closeImportModal()" style="font-size:1.25rem;">&#8592;</button>
+      <h2 class="modal__title">Import Visits CSV</h2>
+      <div style="width:2rem;"></div>
+    </div>
+
+    <div style="padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-4);overflow-y:auto;height:calc(100% - 56px);">
+
+      <!-- Step 1: File picker -->
+      <div id="import-step-pick" class="card" style="padding:var(--space-4);">
+        <div class="section-label" style="margin-bottom:var(--space-2);">PixSell Diary / Calls CSV</div>
+        <p class="text-sm text-muted" style="margin-bottom:var(--space-3);">
+          Select the CSV exported from PixSell. The file should have 5 header rows before data begins.
+          Large files (22,000+ rows) are supported.
+        </p>
+        <input type="file" id="import-file-input" accept=".csv,text/csv"
+               style="display:none;" onchange="importFileSelected()">
+        <button class="btn btn--accent btn--full" onclick="document.getElementById('import-file-input').click()">
+          Choose CSV File
+        </button>
+        <div id="import-file-name" class="text-sm text-muted" style="margin-top:var(--space-2);text-align:center;"></div>
+      </div>
+
+      <!-- Step 2: Preview (hidden until file parsed) -->
+      <div id="import-step-preview" class="hidden">
+        <div id="import-parse-stats" class="card" style="padding:var(--space-3);margin-bottom:var(--space-3);"></div>
+        <div class="section-label" style="margin-bottom:var(--space-2);">Preview (first 20 rows)</div>
+        <div style="overflow-x:auto;">
+          <table id="import-preview-table" class="data-table" style="min-width:500px;font-size:0.75rem;"></table>
+        </div>
+        <div id="import-error" class="form-error hidden" style="margin-top:var(--space-3);"></div>
+        <button class="btn btn--accent btn--full" id="import-run-btn"
+                onclick="runImport()" style="margin-top:var(--space-4);">
+          Import All Valid Rows
+        </button>
+      </div>
+
+      <!-- Step 3: Result (hidden until import done) -->
+      <div id="import-step-result" class="hidden">
+        <div id="import-result-card" class="card" style="padding:var(--space-4);"></div>
+        <button class="btn btn--ghost btn--full" onclick="resetImportModal()" style="margin-top:var(--space-3);">
+          Import Another File
+        </button>
+      </div>
+
     </div>
   </div>
 

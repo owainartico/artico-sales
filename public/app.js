@@ -2208,15 +2208,155 @@ async function loadScoreboard() {
     ${scoreSection('Reactivation Revenue', 'reactivationPct', 'reactivationPctRank', v => `${v}%`, 'Revenue from stores re-engaging after a 3-month gap')}`;
 }
 
+// ── CSV Import ────────────────────────────────────────────────────────────────
+
+let _importFile = null;
+
+function openImportModal() {
+  resetImportModal();
+  el('modal-import').classList.remove('hidden');
+}
+
+function closeImportModal() {
+  el('modal-import').classList.add('hidden');
+}
+
+function resetImportModal() {
+  _importFile = null;
+  el('import-file-input').value = '';
+  el('import-file-name').textContent = '';
+  el('import-step-preview').classList.add('hidden');
+  el('import-step-result').classList.add('hidden');
+  el('import-step-pick').classList.remove('hidden');
+  el('import-error').classList.add('hidden');
+}
+
+async function importFileSelected() {
+  const input = el('import-file-input');
+  if (!input.files || !input.files[0]) return;
+  _importFile = input.files[0];
+  el('import-file-name').textContent = _importFile.name + ' (' + (_importFile.size / 1024).toFixed(0) + ' KB)';
+
+  // Show loading state
+  el('import-step-pick').classList.add('hidden');
+  el('import-step-preview').classList.remove('hidden');
+  el('import-parse-stats').innerHTML = '<div class="skeleton-block skeleton-block--sm"></div>';
+  el('import-preview-table').innerHTML = '';
+  el('import-run-btn').disabled = true;
+
+  // Upload for preview
+  const form = new FormData();
+  form.append('csv', _importFile);
+
+  try {
+    const res = await fetch('/api/visits/import/preview', { method: 'POST', body: form, credentials: 'same-origin' });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      el('import-parse-stats').innerHTML = '';
+      el('import-error').textContent = data.error || 'Preview failed.';
+      el('import-error').classList.remove('hidden');
+      return;
+    }
+
+    // Stats bar
+    el('import-parse-stats').innerHTML = `
+      <div class="import-stats">
+        <span class="import-stat import-stat--muted">${data.totalRows.toLocaleString()} rows</span>
+        <span class="import-stat import-stat--ok">${data.validRows.toLocaleString()} valid</span>
+        ${data.nonZoho   ? `<span class="import-stat import-stat--muted">${data.nonZoho.toLocaleString()} non-Zoho skipped</span>` : ''}
+        ${data.noStore   ? `<span class="import-stat import-stat--warn">${data.noStore.toLocaleString()} store not found</span>` : ''}
+        ${data.noRep     ? `<span class="import-stat import-stat--warn">${data.noRep.toLocaleString()} rep not matched</span>` : ''}
+        ${data.badDate   ? `<span class="import-stat import-stat--warn">${data.badDate.toLocaleString()} bad date</span>` : ''}
+      </div>`;
+
+    // Preview table
+    if (data.preview && data.preview.length > 0) {
+      el('import-preview-table').innerHTML = `
+        <thead>
+          <tr>
+            <th>Date</th><th>Start</th><th>Account</th>
+            <th>Rep</th><th>Type</th><th>Note</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.preview.map(r => `
+            <tr>
+              <td>${r.date}</td>
+              <td>${r.start}</td>
+              <td title="${r.account}">${r.account.slice(-6)}</td>
+              <td>${r.rep_code}</td>
+              <td>${r.category}</td>
+              <td title="${r.note}">${r.note ? r.note.slice(0, 40) + (r.note.length > 40 ? '…' : '') : ''}</td>
+            </tr>`).join('')}
+        </tbody>`;
+    } else {
+      el('import-preview-table').innerHTML = '<caption style="padding:1rem;color:var(--color-muted);">No importable rows found.</caption>';
+    }
+
+    el('import-run-btn').disabled = data.validRows === 0;
+  } catch (err) {
+    el('import-parse-stats').innerHTML = '';
+    el('import-error').textContent = 'Network error: ' + err.message;
+    el('import-error').classList.remove('hidden');
+  }
+}
+
+async function runImport() {
+  if (!_importFile) return;
+  const btn = el('import-run-btn');
+  btn.disabled = true;
+  btn.textContent = 'Importing…';
+
+  const form = new FormData();
+  form.append('csv', _importFile);
+
+  try {
+    const res = await fetch('/api/visits/import/run', { method: 'POST', body: form, credentials: 'same-origin' });
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      el('import-error').textContent = data.error || 'Import failed.';
+      el('import-error').classList.remove('hidden');
+      btn.disabled = false;
+      btn.textContent = 'Import All Valid Rows';
+      return;
+    }
+
+    // Show results
+    el('import-step-preview').classList.add('hidden');
+    el('import-step-result').classList.remove('hidden');
+    el('import-result-card').innerHTML = `
+      <div class="section-label" style="margin-bottom:var(--space-3);">Import Complete</div>
+      <div class="import-stats" style="flex-direction:column;align-items:flex-start;gap:var(--space-2);">
+        <span class="import-stat import-stat--ok">✓ ${data.imported.toLocaleString()} visits imported</span>
+        ${data.duplicates       ? `<span class="import-stat import-stat--muted">${data.duplicates.toLocaleString()} duplicates skipped</span>` : ''}
+        ${data.skipped_non_zoho ? `<span class="import-stat import-stat--muted">${data.skipped_non_zoho.toLocaleString()} non-Zoho rows skipped</span>` : ''}
+        ${data.skipped_no_store ? `<span class="import-stat import-stat--warn">${data.skipped_no_store.toLocaleString()} store not found</span>` : ''}
+        ${data.skipped_no_rep   ? `<span class="import-stat import-stat--warn">${data.skipped_no_rep.toLocaleString()} rep code not matched</span>` : ''}
+        ${data.skipped_bad_date ? `<span class="import-stat import-stat--warn">${data.skipped_bad_date.toLocaleString()} bad date/time</span>` : ''}
+      </div>`;
+  } catch (err) {
+    el('import-error').textContent = 'Network error: ' + err.message;
+    el('import-error').classList.remove('hidden');
+    btn.disabled = false;
+    btn.textContent = 'Import All Valid Rows';
+  }
+}
+
 // ── Expose globals for inline onclick handlers ────────────────────────────────
-window.openUserModal     = openUserModal;
-window.resetPassword     = resetPassword;
-window.openLogVisitModal = openLogVisitModal;
+window.openUserModal      = openUserModal;
+window.resetPassword      = resetPassword;
+window.openLogVisitModal  = openLogVisitModal;
 window.closeLogVisitModal = closeLogVisitModal;
-window.ackAlert          = ackAlert;
-window.runAlerts         = runAlerts;
-window.openSkuDetail     = openSkuDetail;
-window.closeSkuDetail    = closeSkuDetail;
+window.ackAlert           = ackAlert;
+window.runAlerts          = runAlerts;
+window.openSkuDetail      = openSkuDetail;
+window.closeSkuDetail     = closeSkuDetail;
+window.openImportModal    = openImportModal;
+window.closeImportModal   = closeImportModal;
+window.importFileSelected = importFileSelected;
+window.runImport          = runImport;
+window.resetImportModal   = resetImportModal;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 boot();

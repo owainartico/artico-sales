@@ -1,10 +1,234 @@
 'use strict';
 
 const express = require('express');
+const multer  = require('multer');
+const { parse } = require('csv-parse/sync');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const db = require('../db');
 
 const router = express.Router();
+
+// ── CSV import helpers ────────────────────────────────────────────────────────
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 50 * 1024 * 1024 }, // 50 MB
+});
+
+// Column indices in the PixSell diary/calls CSV (0-based, after 5 header rows)
+const COL_DATE     = 0;
+const COL_START    = 1;
+const COL_ACCOUNT  = 4;   // Zoho contact ID
+const COL_COMMENTS = 7;
+const COL_REP_CODE = 18;  // e.g. CW, EM, JA
+const COL_CATEGORY = 27;  // PHONE or VISIT
+
+/** Parse PixSell CSV buffer → array of raw row arrays, skipping first 5 header lines. */
+function parseCsv(buffer) {
+  return parse(buffer, {
+    from_line:        6,     // skip 5 PixSell report header rows (1-indexed)
+    skip_empty_lines: true,
+    relax_column_count: true,
+    trim:             true,
+  });
+}
+
+/**
+ * Convert a PixSell date ("D/M/YYYY") + time ("H:MM" or "H:MM:SS")
+ * to a JS Date in AEST (UTC+10). Returns null if unparseable.
+ */
+function toAEST(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+  try {
+    let iso;
+    if (dateStr.includes('/')) {
+      const parts = dateStr.split('/');
+      if (parts.length !== 3) return null;
+      const [d, m, y] = parts;
+      iso = `${y.padStart(4,'0')}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+    } else {
+      iso = dateStr; // already YYYY-MM-DD
+    }
+    const timeParts = timeStr.split(':').slice(0, 2).join(':'); // HH:MM
+    const d = new Date(`${iso}T${timeParts}:00+10:00`);
+    if (isNaN(d.getTime())) return null;
+    return d;
+  } catch {
+    return null;
+  }
+}
+
+/** Load lookup maps from DB for a single import pass. */
+async function loadLookups() {
+  const [storeRows, repRows] = await Promise.all([
+    db.query('SELECT id, zoho_contact_id FROM stores WHERE active = TRUE'),
+    db.query('SELECT id, rep_code FROM users WHERE active = TRUE AND rep_code IS NOT NULL'),
+  ]);
+  const storeByZohoId = {};
+  for (const s of storeRows.rows) storeByZohoId[s.zoho_contact_id] = s.id;
+  const repByCode = {};
+  for (const u of repRows.rows) repByCode[u.rep_code.toUpperCase()] = u.id;
+  return { storeByZohoId, repByCode };
+}
+
+/**
+ * Validate and map one CSV row to an import record.
+ * Returns { record } on success or { skip, reason } on failure.
+ */
+function mapRow(row, storeByZohoId, repByCode) {
+  const account  = (row[COL_ACCOUNT]  || '').trim();
+  const repCode  = (row[COL_REP_CODE] || '').trim().toUpperCase();
+  const dateStr  = (row[COL_DATE]     || '').trim();
+  const startStr = (row[COL_START]    || '').trim();
+  const comments = (row[COL_COMMENTS] || '').trim() || null;
+  const category = (row[COL_CATEGORY] || '').trim().toLowerCase();
+
+  // Skip non-Zoho account prefixes (PP, PAC, etc.)
+  if (!account.startsWith('1748')) {
+    return { skip: true, reason: 'non_zoho' };
+  }
+
+  const storeId = storeByZohoId[account];
+  if (!storeId) return { skip: true, reason: 'no_store_match' };
+
+  if (!repCode) return { skip: true, reason: 'no_rep_code' };
+  const repId = repByCode[repCode];
+  if (!repId) return { skip: true, reason: 'no_rep_match' };
+
+  const visitedAt = toAEST(dateStr, startStr);
+  if (!visitedAt) return { skip: true, reason: 'bad_date' };
+
+  const visitType = category === 'phone' ? 'phone' : 'visit';
+
+  return { record: { storeId, repId, visitedAt, visitType, note: comments } };
+}
+
+// ── POST /api/visits/import/preview ──────────────────────────────────────────
+// Parse the CSV and return the first 20 data rows + whole-file counts.
+// No DB writes. Manager/executive only.
+
+router.post(
+  '/import/preview',
+  requireRole('manager', 'executive'),
+  upload.single('csv'),
+  async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    try {
+      const { storeByZohoId, repByCode } = await loadLookups();
+      const rows = parseCsv(req.file.buffer);
+
+      let totalRows = 0, validRows = 0, nonZoho = 0, noStore = 0, noRep = 0, badDate = 0;
+      const preview = [];
+
+      for (const row of rows) {
+        if (!row.length || row.every(c => !c)) continue;
+        totalRows++;
+
+        const result = mapRow(row, storeByZohoId, repByCode);
+        if (result.skip) {
+          if (result.reason === 'non_zoho') nonZoho++;
+          else if (result.reason === 'no_store_match') noStore++;
+          else if (result.reason === 'no_rep_match' || result.reason === 'no_rep_code') noRep++;
+          else if (result.reason === 'bad_date') badDate++;
+          continue;
+        }
+
+        validRows++;
+        if (preview.length < 20) {
+          const { record } = result;
+          preview.push({
+            date:       (row[COL_DATE]     || '').trim(),
+            start:      (row[COL_START]    || '').trim(),
+            account:    (row[COL_ACCOUNT]  || '').trim(),
+            store_name: Object.keys(storeByZohoId).find(k => storeByZohoId[k] === record.storeId)
+                          ? `(id ${record.storeId})` : '?',
+            rep_code:   (row[COL_REP_CODE] || '').trim(),
+            category:   (row[COL_CATEGORY] || '').trim() || 'VISIT',
+            note:       (row[COL_COMMENTS] || '').trim() || '',
+          });
+        }
+      }
+
+      res.json({ totalRows, validRows, nonZoho, noStore, noRep, badDate, preview });
+    } catch (err) {
+      console.error('[import/preview]', err.message);
+      res.status(500).json({ error: 'Failed to parse CSV: ' + err.message });
+    }
+  },
+);
+
+// ── POST /api/visits/import/run ───────────────────────────────────────────────
+// Full import: parse CSV, batch-insert into visits. Manager/executive only.
+
+router.post(
+  '/import/run',
+  requireRole('manager', 'executive'),
+  upload.single('csv'),
+  async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    try {
+      const { storeByZohoId, repByCode } = await loadLookups();
+      const rows = parseCsv(req.file.buffer);
+
+      const records = [];
+      let skippedNonZoho = 0, skippedNoStore = 0, skippedNoRep = 0, skippedBadDate = 0;
+
+      for (const row of rows) {
+        if (!row.length || row.every(c => !c)) continue;
+        const result = mapRow(row, storeByZohoId, repByCode);
+        if (result.skip) {
+          if (result.reason === 'non_zoho')     skippedNonZoho++;
+          else if (result.reason === 'no_store_match') skippedNoStore++;
+          else if (result.reason === 'no_rep_match' || result.reason === 'no_rep_code') skippedNoRep++;
+          else if (result.reason === 'bad_date')  skippedBadDate++;
+          continue;
+        }
+        records.push(result.record);
+      }
+
+      // Batch insert in chunks of 500, ON CONFLICT DO NOTHING for dedup
+      const BATCH = 500;
+      let imported = 0, duplicates = 0;
+
+      for (let i = 0; i < records.length; i += BATCH) {
+        const chunk = records.slice(i, i + BATCH);
+
+        // Build multi-row VALUES clause
+        const values = [];
+        const params = [];
+        let p = 1;
+        for (const r of chunk) {
+          values.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++})`);
+          params.push(r.repId, r.storeId, r.visitedAt.toISOString(), r.visitType, r.note);
+        }
+
+        const sql = `
+          INSERT INTO visits (rep_id, store_id, visited_at, visit_type, note)
+          VALUES ${values.join(', ')}
+          ON CONFLICT (store_id, rep_id, visited_at) DO NOTHING`;
+
+        const result = await db.query(sql, params);
+        imported  += result.rowCount;
+        duplicates += chunk.length - result.rowCount;
+      }
+
+      console.log(`[import/run] imported=${imported} dupes=${duplicates} skipped_non_zoho=${skippedNonZoho} skipped_no_store=${skippedNoStore} skipped_no_rep=${skippedNoRep}`);
+
+      res.json({
+        ok:               true,
+        imported,
+        duplicates,
+        skipped_non_zoho: skippedNonZoho,
+        skipped_no_store: skippedNoStore,
+        skipped_no_rep:   skippedNoRep,
+        skipped_bad_date: skippedBadDate,
+      });
+    } catch (err) {
+      console.error('[import/run]', err.message);
+      res.status(500).json({ error: 'Import failed: ' + err.message });
+    }
+  },
+);
 
 // ── GET /api/visits  (recent visit list) ─────────────────────────────────────
 
