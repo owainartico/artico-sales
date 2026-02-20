@@ -1204,6 +1204,99 @@ body {
   margin-bottom: var(--space-3);
 }
 
+/* ── Grade Review ──────────────────────────────────────────────── */
+.gr-summary {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-1);
+}
+.gr-summary__item {
+  flex: 1;
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  text-align: center;
+  border: 1px solid var(--color-border);
+}
+.gr-summary__item--up  { border-top: 3px solid #22c55e; }
+.gr-summary__item--down { border-top: 3px solid #ef4444; }
+.gr-summary__item--vm  { border-top: 3px solid var(--color-primary); }
+.gr-summary__num { display: block; font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
+.gr-summary__lbl { display: block; font-size: 0.68rem; color: var(--color-muted); margin-top: 2px; }
+
+.gr-section { margin-bottom: var(--space-4); }
+.gr-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.gr-section__header--up   { border-left: 4px solid #22c55e; }
+.gr-section__header--down { border-left: 4px solid #ef4444; }
+.gr-section__count {
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: var(--color-border);
+  color: var(--color-muted);
+  padding: 2px 8px;
+  border-radius: 99px;
+}
+
+.gr-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: 0;
+  border-radius: 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.gr-row:last-child { border-bottom: none; }
+.gr-row__grades {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+.gr-arrow {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-muted);
+}
+.gr-arrow--up   { color: #22c55e; }
+.gr-arrow--down { color: #ef4444; }
+.gr-row__info { flex: 1; min-width: 0; }
+.gr-row__name { font-weight: 600; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gr-row__sub  { font-size: 0.72rem; color: var(--color-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gr-row__metrics {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+.gr-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 36px;
+}
+.gr-metric__val { font-size: 0.8rem; font-weight: 600; }
+.gr-metric__lbl { font-size: 0.6rem; color: var(--color-muted); text-transform: uppercase; }
+
+.gr-vm-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 99px;
+  flex-shrink: 0;
+}
+.gr-vm-badge--under { background: #fef9c3; color: #854d0e; }
+.gr-vm-badge--over  { background: #fee2e2; color: #991b1b; }
+
 /* ── Textarea ──────────────────────────────────────────────────── */
 .form-textarea {
   resize: vertical;

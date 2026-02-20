@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requireRole } = require('../middleware/auth');
 const db = require('../db');
 const { fetchInvoices } = require('../services/sync');
 
@@ -203,6 +203,137 @@ router.get('/new-doors', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('New doors error:', err.message);
     res.status(500).json({ error: 'Failed to load new doors' });
+  }
+});
+
+// ── GET /api/stores/grade-review  (manager/exec only) ────────────────────────
+
+// Grade thresholds for 12-month rolling window
+const GRADE_BENCH = {
+  A: { revenue: 5000, orders: 6, sku: 20 },
+  B: { revenue: 1500, orders: 3, sku:  8 },
+};
+// Expected visits per year per grade
+const VISIT_MIN = { A: 4, B: 2, C: 0 };
+const VISIT_MAX = { A: Infinity, B: 5, C: 3 };
+
+function suggestGrade(revenue, orders, sku) {
+  const score = (v, hi, lo) => v >= hi ? 2 : v >= lo ? 1 : 0;
+  const total = (
+    score(revenue, GRADE_BENCH.A.revenue, GRADE_BENCH.B.revenue) * 2 +
+    score(orders,  GRADE_BENCH.A.orders,  GRADE_BENCH.B.orders)      +
+    score(sku,     GRADE_BENCH.A.sku,     GRADE_BENCH.B.sku)
+  ) / 4;
+  return total >= 1.5 ? 'A' : total >= 0.5 ? 'B' : 'C';
+}
+
+function visitMismatch(grade, visitCount) {
+  const g = grade || 'C';
+  if (visitCount < VISIT_MIN[g]) return 'under';
+  if (visitCount > VISIT_MAX[g]) return 'over';
+  return null;
+}
+
+const GRADE_ORDER = { A: 0, B: 1, C: 2 };
+
+router.get('/grade-review', requireAuth, requireRole('manager', 'executive'), async (req, res) => {
+  try {
+    const { from: windowFrom, to: windowTo } = get12MonthWindow();
+
+    const [allInvoices, { rows: stores }, { rows: visitRows }] = await Promise.all([
+      fetchInvoices(windowFrom, windowTo),
+      db.query(`
+        SELECT s.id, s.name, s.grade, s.state, s.zoho_contact_id, s.rep_id, u.name AS rep_name
+        FROM stores s
+        LEFT JOIN users u ON u.id = s.rep_id
+        WHERE s.active = TRUE
+        ORDER BY s.name
+      `),
+      db.query(`
+        SELECT store_id, COUNT(*)::INTEGER AS visit_count
+        FROM visits
+        WHERE visited_at >= $1
+        GROUP BY store_id
+      `, [windowFrom]),
+    ]);
+
+    const visitByStore = {};
+    for (const r of visitRows) visitByStore[r.store_id] = r.visit_count;
+
+    // Build customer_id → invoices map for O(1) per-store lookup
+    const invoicesByCustomer = new Map();
+    for (const inv of allInvoices) {
+      const cid = String(inv.customer_id);
+      if (!invoicesByCustomer.has(cid)) invoicesByCustomer.set(cid, []);
+      invoicesByCustomer.get(cid).push(inv);
+    }
+
+    const upgrades = [], downgrades = [], visit_mismatch = [];
+
+    for (const store of stores) {
+      const storeInvs = invoicesByCustomer.get(String(store.zoho_contact_id)) || [];
+      const revenue_12m = storeInvs.reduce((s, i) => s + Number(i.total || 0), 0);
+      const order_count = storeInvs.length;
+
+      const skuSet = new Set();
+      for (const inv of storeInvs) {
+        for (const line of inv.line_items || []) {
+          if (line.item_id) skuSet.add(String(line.item_id));
+        }
+      }
+      const sku_depth = skuSet.size;
+      const visit_count = visitByStore[store.id] || 0;
+
+      const current   = store.grade || null;
+      const suggested = suggestGrade(revenue_12m, order_count, sku_depth);
+      const vm        = visitMismatch(current, visit_count);
+
+      const row = {
+        store_id:                store.id,
+        name:                    store.name,
+        state:                   store.state,
+        rep_id:                  store.rep_id,
+        rep_name:                store.rep_name,
+        current_grade:           current,
+        suggested_grade:         suggested,
+        metrics: {
+          revenue_12m:  Math.round(revenue_12m),
+          order_count,
+          sku_depth,
+          visit_count,
+        },
+        visit_mismatch:           !!vm,
+        visit_mismatch_direction: vm,
+      };
+
+      if (current && suggested !== current) {
+        if (GRADE_ORDER[suggested] < GRADE_ORDER[current]) {
+          upgrades.push(row);
+        } else {
+          downgrades.push(row);
+        }
+      }
+      if (vm) visit_mismatch.push(row);
+    }
+
+    const byRevDesc = (a, b) => b.metrics.revenue_12m - a.metrics.revenue_12m;
+    upgrades.sort(byRevDesc);
+    downgrades.sort(byRevDesc);
+    visit_mismatch.sort(byRevDesc);
+
+    res.json({
+      upgrades,
+      downgrades,
+      visit_mismatch,
+      summary: {
+        upgrades:      upgrades.length,
+        downgrades:    downgrades.length,
+        visit_mismatch: visit_mismatch.length,
+      },
+    });
+  } catch (err) {
+    console.error('Grade review error:', err.message);
+    res.status(500).json({ error: 'Failed to load grade review' });
   }
 });
 

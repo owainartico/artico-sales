@@ -1171,7 +1171,7 @@ function csvEsc(s) {
 // ═══════════════════════════════════════════════════════════════════
 
 // ── State ─────────────────────────────────────────────────────────
-let _storesView         = 'list';   // 'list' | 'new-doors'
+let _storesView         = 'list';   // 'list' | 'new-doors' | 'grade-review'
 let _storesSearch       = '';
 let _storesGrade        = '';
 let _storesState        = '';
@@ -1196,6 +1196,7 @@ async function loadStores() {
       <div class="view-toggle">
         <button class="view-toggle__btn ${_storesView === 'list' ? 'active' : ''}" onclick="switchStoresView('list')">Stores</button>
         <button class="view-toggle__btn ${_storesView === 'new-doors' ? 'active' : ''}" onclick="switchStoresView('new-doors')">New Customers</button>
+        ${isManager ? `<button class="view-toggle__btn ${_storesView === 'grade-review' ? 'active' : ''}" onclick="switchStoresView('grade-review')">Grade Review</button>` : ''}
       </div>
     </div>
 
@@ -1225,13 +1226,22 @@ async function loadStores() {
       </div>
     </div>
 
-    <!-- New Doors view -->
+    <!-- New Customers view -->
     <div id="new-doors-view" class="${_storesView !== 'new-doors' ? 'hidden' : ''}">
       <div id="new-doors-content">
         <div class="skeleton-block"></div>
         <div class="skeleton-block skeleton-block--sm"></div>
       </div>
-    </div>`;
+    </div>
+
+    <!-- Grade Review view (managers only) -->
+    ${isManager ? `<div id="grade-review-view" class="${_storesView !== 'grade-review' ? 'hidden' : ''}">
+      <div id="grade-review-content">
+        <div class="skeleton-block"></div>
+        <div class="skeleton-block skeleton-block--sm"></div>
+      </div>
+    </div>` : ''}
+  `;
 
   // Populate rep filter for managers
   if (isManager) {
@@ -1248,6 +1258,8 @@ async function loadStores() {
 
   if (_storesView === 'list') {
     loadStoreList();
+  } else if (_storesView === 'grade-review') {
+    loadGradeReview();
   } else {
     loadNewDoors(_newDoorsMonth);
   }
@@ -1255,19 +1267,24 @@ async function loadStores() {
 
 function switchStoresView(view) {
   _storesView = view;
-  const listView   = el('stores-list-view');
-  const doorsView  = el('new-doors-view');
-  document.querySelectorAll('.view-toggle__btn').forEach(b =>
-    b.classList.toggle('active', b.textContent.trim().toLowerCase().replace(' ', '-') === view ||
-      (view === 'list' && b.textContent.includes('Stores')))
-  );
+  const listView    = el('stores-list-view');
+  const doorsView   = el('new-doors-view');
+  const gradeView   = el('grade-review-view');
+  document.querySelectorAll('.view-toggle__btn').forEach(b => {
+    const t = b.textContent.trim();
+    const isActive = (view === 'list' && t === 'Stores') ||
+                     (view === 'new-doors' && t === 'New Customers') ||
+                     (view === 'grade-review' && t === 'Grade Review');
+    b.classList.toggle('active', isActive);
+  });
+  listView?.classList.toggle('hidden', view !== 'list');
+  doorsView?.classList.toggle('hidden', view !== 'new-doors');
+  gradeView?.classList.toggle('hidden', view !== 'grade-review');
   if (view === 'list') {
-    listView?.classList.remove('hidden');
-    doorsView?.classList.add('hidden');
     loadStoreList();
+  } else if (view === 'grade-review') {
+    loadGradeReview();
   } else {
-    listView?.classList.add('hidden');
-    doorsView?.classList.remove('hidden');
     loadNewDoors(_newDoorsMonth);
   }
 }
@@ -1540,6 +1557,95 @@ function newDoorCard(d) {
       </div>
     </div>`;
 }
+
+// ── Grade Review ──────────────────────────────────────────────────
+
+async function loadGradeReview() {
+  const wrap = el('grade-review-content');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="skeleton-block"></div><div class="skeleton-block skeleton-block--sm"></div>';
+
+  const data = await api('GET', '/api/stores/grade-review');
+  if (!data || data.error) {
+    wrap.innerHTML = '<p class="text-muted" style="padding:16px;">Failed to load grade review.</p>';
+    return;
+  }
+
+  const { upgrades, downgrades, visit_mismatch, summary } = data;
+
+  function gradeArrow(cur, sug) {
+    const up   = (cur === 'B' && sug === 'A') || (cur === 'C' && sug !== 'C');
+    const down = (cur === 'A' && sug !== 'A') || (cur === 'B' && sug === 'C');
+    return up ? '↑' : down ? '↓' : '→';
+  }
+
+  function grBadge(g, cls = '') {
+    if (!g) return `<span class="grade-badge grade-badge--c" ${cls}>?</span>`;
+    return `<span class="grade-badge grade-badge--${g.toLowerCase()}" ${cls}>${g}</span>`;
+  }
+
+  function grRow(r, showVisit = false) {
+    const arrow = gradeArrow(r.current_grade, r.suggested_grade);
+    const arrowClass = arrow === '↑' ? 'gr-arrow--up' : arrow === '↓' ? 'gr-arrow--down' : '';
+    const vmBadge = showVisit && r.visit_mismatch
+      ? `<span class="gr-vm-badge gr-vm-badge--${r.visit_mismatch_direction}">${r.visit_mismatch_direction === 'under' ? 'Under-visited' : 'Over-visited'}</span>`
+      : '';
+    return `
+      <div class="gr-row card" ${r.store_id ? `onclick="openStoreDetail(${r.store_id})" style="cursor:pointer;"` : ''}>
+        <div class="gr-row__grades">
+          ${grBadge(r.current_grade)}
+          <span class="gr-arrow ${arrowClass}">${arrow}</span>
+          ${grBadge(r.suggested_grade)}
+        </div>
+        <div class="gr-row__info">
+          <div class="gr-row__name">${escHtml(r.name)}</div>
+          <div class="gr-row__sub">${r.state ? escHtml(r.state) + ' · ' : ''}${r.rep_name ? escHtml(r.rep_name) : ''}</div>
+        </div>
+        <div class="gr-row__metrics">
+          <div class="gr-metric"><span class="gr-metric__val">${fmt(r.metrics.revenue_12m, true)}</span><span class="gr-metric__lbl">12m rev</span></div>
+          <div class="gr-metric"><span class="gr-metric__val">${r.metrics.order_count}</span><span class="gr-metric__lbl">orders</span></div>
+          <div class="gr-metric"><span class="gr-metric__val">${r.metrics.sku_depth}</span><span class="gr-metric__lbl">SKUs</span></div>
+          <div class="gr-metric"><span class="gr-metric__val">${r.metrics.visit_count}</span><span class="gr-metric__lbl">visits</span></div>
+        </div>
+        ${vmBadge}
+      </div>`;
+  }
+
+  function grSection(title, rows, emptyMsg, showVisit = false, colorClass = '') {
+    return `
+      <div class="gr-section">
+        <div class="gr-section__header ${colorClass}">
+          <span class="gr-section__title">${title}</span>
+          <span class="gr-section__count">${rows.length}</span>
+        </div>
+        ${rows.length
+          ? rows.map(r => grRow(r, showVisit)).join('')
+          : `<p class="text-muted text-sm" style="padding:12px 16px;">${emptyMsg}</p>`}
+      </div>`;
+  }
+
+  wrap.innerHTML = `
+    <div class="gr-summary">
+      <div class="gr-summary__item gr-summary__item--up">
+        <span class="gr-summary__num">${summary.upgrades}</span>
+        <span class="gr-summary__lbl">Possible upgrades</span>
+      </div>
+      <div class="gr-summary__item gr-summary__item--down">
+        <span class="gr-summary__num">${summary.downgrades}</span>
+        <span class="gr-summary__lbl">Possible downgrades</span>
+      </div>
+      <div class="gr-summary__item gr-summary__item--vm">
+        <span class="gr-summary__num">${summary.visit_mismatch}</span>
+        <span class="gr-summary__lbl">Visit mismatch</span>
+      </div>
+    </div>
+    <p class="text-xs text-muted" style="padding:4px 16px 8px;">Based on rolling 12-month revenue, order frequency, SKU depth, and visit count.</p>
+    ${grSection('Possible Upgrades ↑', upgrades, 'No upgrade candidates.', false, 'gr-section__header--up')}
+    ${grSection('Possible Downgrades ↓', downgrades, 'No downgrade candidates.', false, 'gr-section__header--down')}
+    ${grSection('Visit Frequency Mismatch', visit_mismatch, 'No visit mismatches.', true, '')}
+  `;
+}
+window.loadGradeReview = loadGradeReview;
 
 // ── Shared utilities ──────────────────────────────────────────────
 

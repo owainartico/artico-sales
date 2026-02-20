@@ -82,6 +82,23 @@ async function runMigrations() {
   } catch (err) {
     console.error('[migrations] Failed to apply alert_log migration:', err.message);
   }
+
+  try {
+    await pool.query(`
+      ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS zoho_salesperson_ids TEXT[];
+    `);
+    // Set Deanne Burrows to cover both "Owain ap Rees" and "Sally ap Rees" Zoho names
+    await pool.query(`
+      UPDATE users
+      SET zoho_salesperson_ids = ARRAY['Owain ap Rees', 'Sally ap Rees']
+      WHERE email = 'deanne@artico.net.au'
+        AND (zoho_salesperson_ids IS NULL OR zoho_salesperson_ids = '{}')
+    `);
+    console.log('[migrations] users.zoho_salesperson_ids OK');
+  } catch (err) {
+    console.error('[migrations] Failed to apply users migration:', err.message);
+  }
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
