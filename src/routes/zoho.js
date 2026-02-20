@@ -9,7 +9,7 @@
  */
 
 const express = require('express');
-const { makeZohoRequest } = require('../services/zoho');
+const { makeZohoRequest, refreshAccessToken } = require('../services/zoho');
 const { syncStores, fetchInvoices, fetchInvoicesWithTimeout, invalidateInvoiceCache, refreshInvoiceCacheInBackground, getInvoiceCacheStats, isSyncRecentEnough } = require('../services/sync');
 const { requireRole } = require('../middleware/auth');
 const db = require('../db');
@@ -314,6 +314,51 @@ router.get('/debug/token-status', requireRole('executive'), async (req, res) => 
   }
 
   res.json(out);
+});
+
+// ── POST /api/debug/force-token-refresh ───────────────────────────────────────
+// Forces an immediate Zoho token refresh (bypasses the 1-hour cache) and
+// confirms the new refresh token was written to app_config. Executive only.
+// Use this to break a token-expiry loop without redeploying.
+
+router.post('/debug/force-token-refresh', requireRole('executive'), async (req, res) => {
+  const before = {};
+  const after  = {};
+
+  // Snapshot app_config before
+  try {
+    const { rows } = await db.query(
+      `SELECT LEFT(value, 20) AS preview, updated_at FROM app_config WHERE key = 'zoho_refresh_token'`
+    );
+    before.db_token = rows.length > 0
+      ? { preview: rows[0].preview + '…', updated_at: rows[0].updated_at }
+      : { found: false };
+  } catch (err) {
+    before.db_error = err.message;
+  }
+
+  // Force token refresh (this calls Zoho and saves the new refresh token to DB)
+  try {
+    await refreshAccessToken();
+    after.refresh = 'success';
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message, before });
+  }
+
+  // Snapshot app_config after
+  try {
+    const { rows } = await db.query(
+      `SELECT LEFT(value, 20) AS preview, updated_at FROM app_config WHERE key = 'zoho_refresh_token'`
+    );
+    after.db_token = rows.length > 0
+      ? { preview: rows[0].preview + '…', updated_at: rows[0].updated_at }
+      : { found: false };
+  } catch (err) {
+    after.db_error = err.message;
+  }
+
+  const rotated = before.db_token?.preview !== after.db_token?.preview;
+  res.json({ ok: true, rotated, before, after });
 });
 
 // ── GET /api/debug/zoho-ping ──────────────────────────────────────────────────

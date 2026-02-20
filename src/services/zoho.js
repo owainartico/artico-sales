@@ -115,10 +115,17 @@ async function refreshAccessToken() {
 
   console.log(`[zoho] Access token refreshed — expires in ${data.expires_in}s`);
 
-  // If Zoho rotated the refresh token, persist the new one immediately
-  if (data.refresh_token && data.refresh_token !== _refreshToken) {
-    console.log('[zoho] New refresh token received — persisting');
+  // Always persist the refresh token that Zoho returns, whether or not it changed.
+  // Zoho Books rotates the refresh token on every call — using a stale refresh
+  // token on the next call will fail.  The previous guard (data.refresh_token !==
+  // _refreshToken) was fragile: if the in-memory value ever drifted from the DB
+  // value (e.g. after a restart that loaded a stale row), the new token would not
+  // be saved and the chain would break on the very next server restart.
+  if (data.refresh_token) {
     await _saveRefreshToken(data.refresh_token);
+    console.log('[zoho] Refresh token rotated successfully');
+  } else {
+    console.warn('[zoho] Zoho did not return a refresh_token in the response — chain may break after restart');
   }
 
   return _cachedToken;

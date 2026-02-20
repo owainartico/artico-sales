@@ -73,6 +73,21 @@ app.use((err, req, res, _next) => {
 
 // ── Idempotent migrations ─────────────────────────────────────────────────────
 async function runMigrations() {
+  // ── app_config (key-value store, required for Zoho refresh token persistence)
+  // Must run first — initZohoTokens() depends on this table existing.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_config (
+        key        VARCHAR(255) PRIMARY KEY,
+        value      TEXT         NOT NULL,
+        updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+      );
+    `);
+    console.log('[migrations] app_config OK');
+  } catch (err) {
+    console.error('[migrations] Failed to apply app_config migration:', err.message);
+  }
+
   try {
     await pool.query(`
       ALTER TABLE alert_log
