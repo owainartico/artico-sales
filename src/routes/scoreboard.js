@@ -107,7 +107,7 @@ router.get('/', requireAuth, async (req, res) => {
       if (!repId) continue;
       const cid = String(inv.customer_id);
 
-      const total = Number(inv.total || 0);
+      const total = Number(inv.sub_total || 0);
       rev12m[repId]  = (rev12m[repId]  || 0) + total;
       totalRevPerRep[repId] = (totalRevPerRep[repId] || 0) + total;
 

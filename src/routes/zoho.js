@@ -159,7 +159,7 @@ router.get('/debug-deanne', requireRole('executive'), async (req, res) => {
       if (!spMap.has(sp)) spMap.set(sp, { count: 0, total: 0 });
       const e = spMap.get(sp);
       e.count++;
-      e.total += Number(inv.total || 0);
+      e.total += Number(inv.sub_total || 0);
     }
     out.zoho_salesperson_names = [...spMap.entries()]
       .map(([name, { count, total }]) => ({ name, invoice_count: count, total: Math.round(total) }))
@@ -172,7 +172,7 @@ router.get('/debug-deanne', requireRole('executive'), async (req, res) => {
       for (const u of out.all_users) {
         const matched = invoices.filter(i => u.resolved_sp_names.includes(i.salesperson_name));
         u.matched_invoices = matched.length;
-        u.matched_revenue  = Math.round(matched.reduce((s, i) => s + Number(i.total || 0), 0));
+        u.matched_revenue  = Math.round(matched.reduce((s, i) => s + Number(i.sub_total || 0), 0));
       }
     }
   } catch (err) {
@@ -180,6 +180,36 @@ router.get('/debug-deanne', requireRole('executive'), async (req, res) => {
   }
 
   res.json(out);
+});
+
+// ── GET /api/debug-invoice-fields ────────────────────────────────────────────
+// Fetch 5 recent invoices and show all numeric/amount fields so we can verify
+// which field to use for ex-GST revenue.  Executive only.
+
+router.get('/debug-invoice-fields', requireRole('executive'), async (req, res) => {
+  try {
+    const to   = new Date().toISOString().slice(0, 10);
+    const from = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const invoices = await fetchInvoices(from, to);
+    const sample = invoices.slice(0, 5).map(inv => ({
+      invoice_id:       inv.invoice_id,
+      date:             inv.date,
+      customer_name:    inv.customer_name,
+      salesperson_name: inv.salesperson_name,
+      // Amount fields — we want ex-GST
+      total:            inv.total,
+      sub_total:        inv.sub_total,
+      tax_total:        inv.tax_total,
+      total_inclusive_of_tax: inv.total_inclusive_of_tax,
+      // Any other fields with "total" or "amount" in the name
+      _all_amount_keys: Object.entries(inv)
+        .filter(([k, v]) => typeof v === 'number' || (typeof v === 'string' && !isNaN(Number(v)) && v !== '' && (k.includes('total') || k.includes('amount') || k.includes('tax') || k.includes('sub'))))
+        .reduce((acc, [k, v]) => { acc[k] = v; return acc; }, {}),
+    }));
+    res.json({ date_range: { from, to }, sample });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;

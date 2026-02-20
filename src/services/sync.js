@@ -275,9 +275,10 @@ async function syncStores({ force = false } = {}) {
  * Returns raw invoice objects — not stored locally.
  *
  * Each invoice contains (at minimum):
- *   invoice_id, customer_id, salesperson_name, date, total, line_items[]
+ *   invoice_id, customer_id, salesperson_name, date, sub_total (ex-GST), total (inc-GST), line_items[]
+ *   Use sub_total for all revenue calculations — it is the ex-GST amount.
  *
- * line_items contains: item_id, name, quantity, item_total
+ * line_items contains: item_id, name, quantity, item_total (ex-GST per line)
  *   TODO: Confirm 'sku' field name on line items if SKU-based brand matching is needed.
  *
  * TODO: Verify that 'date_start'/'date_end' are the correct Zoho Books filter
