@@ -147,10 +147,11 @@ function get12MonthWindow() {
 function get24MonthWindow() {
   const now  = new Date();
   const from = new Date(now.getFullYear() - 2, now.getMonth(), 1);
+  const toD  = new Date(now.getFullYear(), now.getMonth() + 1, 0); // last day of current month
   const pad  = n => String(n).padStart(2, '0');
   return {
     from: `${from.getFullYear()}-${pad(from.getMonth() + 1)}-01`,
-    to:   now.toISOString().slice(0, 10),
+    to:   `${toD.getFullYear()}-${pad(toD.getMonth() + 1)}-${pad(toD.getDate())}`,
   };
 }
 
@@ -279,9 +280,19 @@ async function runAutoGrading() {
       FROM stores
       WHERE active = TRUE AND grade IS NULL AND is_prospect = FALSE AND grade_locked = FALSE
     `),
-    fetchInvoices(wFrom24, wTo).catch(() => []),
+    fetchInvoices(wFrom24, wTo).catch((err) => {
+      console.error('[grading] Auto-grade: invoice fetch failed:', err.message);
+      return [];
+    }),
     db.query(`SELECT store_id, MAX(visited_at) AS last_visit FROM visits GROUP BY store_id`),
   ]);
+
+  console.log(`[grading] Auto-grade: ${stores.length} ungraded stores, ${invoices.length} invoices in 24m window`);
+
+  if (invoices.length === 0 && stores.length > 0) {
+    console.warn('[grading] Auto-grade: SKIPPING — invoice fetch returned 0 results (possible Zoho API failure). Will retry on next run.');
+    return { graded: 0, changed: 0, errors: 0, skipped: true, reason: 'Invoice fetch returned 0 results' };
+  }
 
   const visitMap = new Map(visitRows.map(r => [r.store_id, r.last_visit]));
   const result   = await gradeStores(stores, invoices, visitMap, wFrom12, wFrom24, 'system', true);
@@ -306,9 +317,19 @@ async function runQuarterlyGrading() {
       FROM stores
       WHERE active = TRUE AND is_prospect = FALSE AND grade_locked = FALSE
     `),
-    fetchInvoices(wFrom24, wTo).catch(() => []),
+    fetchInvoices(wFrom24, wTo).catch((err) => {
+      console.error('[grading] Quarterly: invoice fetch failed:', err.message);
+      return [];
+    }),
     db.query(`SELECT store_id, MAX(visited_at) AS last_visit FROM visits GROUP BY store_id`),
   ]);
+
+  console.log(`[grading] Quarterly: ${stores.length} stores to reassess, ${invoices.length} invoices in 24m window`);
+
+  if (invoices.length === 0) {
+    console.warn('[grading] Quarterly: SKIPPING — invoice fetch returned 0 results (possible Zoho API failure).');
+    return { graded: 0, changed: 0, errors: 0, skipped: true, reason: 'Invoice fetch returned 0 results' };
+  }
 
   const visitMap = new Map(visitRows.map(r => [r.store_id, r.last_visit]));
   const result   = await gradeStores(stores, invoices, visitMap, wFrom12, wFrom24, 'system', false);
@@ -409,9 +430,19 @@ async function downgradeInactiveToProspect() {
       FROM stores
       WHERE active = TRUE AND grade IS NOT NULL AND is_prospect = FALSE
     `),
-    fetchInvoices(wFrom24, wTo).catch(() => []),
+    fetchInvoices(wFrom24, wTo).catch((err) => {
+      console.error('[grading] downgradeInactiveToProspect: invoice fetch failed:', err.message);
+      return [];
+    }),
     db.query(`SELECT store_id, MAX(visited_at) AS last_visit FROM visits GROUP BY store_id`),
   ]);
+
+  console.log(`[grading] downgradeInactiveToProspect: ${stores.length} graded stores, ${invoices.length} invoices in 24m window`);
+
+  if (invoices.length === 0) {
+    console.warn('[grading] downgradeInactiveToProspect: SKIPPING — invoice fetch returned 0 results (would incorrectly downgrade all stores). Will retry on next run.');
+    return { downgraded: 0, alerted: 0, errors: 0, skipped: true, reason: 'Invoice fetch returned 0 results' };
+  }
 
   const visitMap = new Map(visitRows.map(r => [r.store_id, r.last_visit]));
   const invStats = buildInvoiceStats(invoices, wFrom12, wFrom24);

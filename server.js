@@ -161,7 +161,9 @@ app.listen(PORT, async () => {
     }
   }, { timezone: 'Australia/Sydney' });
 
-  // Auto-grade ungraded stores 90 seconds after startup (after invoice cache warms)
+  // Auto-grade ungraded stores 120 seconds after startup (after invoice cache warms)
+  // Scheduler starts at 30s and pre-warms both 13m and 24m cache windows.
+  // 120s gives enough time for the 24m Zoho fetch to complete before grading runs.
   const { runAutoGrading, runQuarterlyGrading, classifyProspects, promoteActiveProspects, downgradeInactiveToProspect } = require('./src/services/grading');
   setTimeout(async () => {
     try {
@@ -172,7 +174,7 @@ app.listen(PORT, async () => {
     } catch (err) {
       console.error('[startup] Auto-grading/prospect classification failed:', err.message);
     }
-  }, 90_000);
+  }, 120_000);
 
   // Quarterly reassessment — last day of Mar/Jun/Sep/Dec at 03:00 AEST
   cron.schedule('0 3 28-31 3,6,9,12 *', async () => {

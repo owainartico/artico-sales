@@ -212,4 +212,92 @@ router.get('/debug-invoice-fields', requireRole('executive'), async (req, res) =
   }
 });
 
+// ── GET /api/debug/grading-status ─────────────────────────────────────────────
+// Diagnostics: grade distribution, invoice cache state, Deanne user record.
+// Executive only.
+
+router.get('/debug/grading-status', requireRole('executive'), async (req, res) => {
+  try {
+    const now = new Date();
+    const toD  = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const from24D = new Date(now.getFullYear() - 2, now.getMonth(), 1);
+    const pad = n => String(n).padStart(2, '0');
+    const from24 = `${from24D.getFullYear()}-${pad(from24D.getMonth() + 1)}-01`;
+    const to24   = `${toD.getFullYear()}-${pad(toD.getMonth() + 1)}-${pad(toD.getDate())}`;
+
+    const [
+      { rows: gradeDist },
+      { rows: deanne },
+      { rows: sampleStores },
+    ] = await Promise.all([
+      // Grade distribution
+      db.query(`
+        SELECT
+          CASE WHEN is_prospect THEN 'prospect' WHEN grade IS NULL THEN 'ungraded' ELSE grade END AS bucket,
+          COUNT(*)::INTEGER AS count
+        FROM stores
+        WHERE active = TRUE
+        GROUP BY 1
+        ORDER BY 1
+      `),
+      // Deanne's user record
+      db.query(`
+        SELECT id, name, email, role, active, zoho_salesperson_id, zoho_salesperson_ids
+        FROM users WHERE name ILIKE '%deanne%'
+      `),
+      // Sample stores that have zoho_contact_id but no grade and not prospect
+      db.query(`
+        SELECT id, name, grade, is_prospect, zoho_contact_id
+        FROM stores
+        WHERE active = TRUE AND grade IS NULL AND is_prospect = FALSE
+        LIMIT 5
+      `),
+    ]);
+
+    // Check 24m invoice cache by attempting a fetch (will use cache if warm)
+    let invoiceCount24m = 0;
+    let invoiceCacheStatus = 'unknown';
+    let sampleCustomerIds = [];
+    try {
+      const invoices = await fetchInvoices(from24, to24);
+      invoiceCount24m = invoices.length;
+      invoiceCacheStatus = invoiceCount24m > 0 ? 'populated' : 'empty';
+      // Sample customer_ids from invoices to compare against store zoho_contact_ids
+      const cidSet = new Set(invoices.map(i => String(i.customer_id)));
+      sampleCustomerIds = [...cidSet].slice(0, 5);
+    } catch (err) {
+      invoiceCacheStatus = `error: ${err.message}`;
+    }
+
+    // Check how many ungraded stores have a matching invoice
+    let ungradedWithInvoice = 0;
+    if (sampleStores.length && invoiceCount24m > 0) {
+      const invoices = await fetchInvoices(from24, to24).catch(() => []);
+      const cidSet = new Set(invoices.map(i => String(i.customer_id)));
+      for (const s of sampleStores) {
+        if (s.zoho_contact_id && cidSet.has(String(s.zoho_contact_id))) ungradedWithInvoice++;
+      }
+    }
+
+    res.json({
+      grade_distribution: gradeDist,
+      invoice_window: { from: from24, to: to24 },
+      invoice_count_24m: invoiceCount24m,
+      invoice_cache_status: invoiceCacheStatus,
+      sample_customer_ids_from_invoices: sampleCustomerIds,
+      ungraded_stores_sample: sampleStores.map(s => ({
+        ...s,
+        has_invoice: sampleCustomerIds.includes(String(s.zoho_contact_id)),
+      })),
+      ungraded_with_invoice_in_sample: ungradedWithInvoice,
+      deanne: deanne[0] || null,
+      hint: invoiceCount24m === 0
+        ? 'Invoice cache is empty — grading is skipping to avoid false lapse detection. Wait for cache to warm (120s after startup) then re-run auto-grade.'
+        : 'Invoice cache looks good. If stores are still ungraded, check that their zoho_contact_id matches invoice customer_id values.',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

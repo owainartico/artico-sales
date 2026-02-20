@@ -400,8 +400,9 @@ function startScheduler() {
 
   const SIXTY_MIN = 60 * 60 * 1000;
 
-  // Helper to compute a month window ending at the current month.
+  // Helper to compute a month window ending at the last day of the current month.
   // n=13 covers same-month-LY (needed for territory growth on rep dashboards).
+  // n=25 covers the 24m grading window (matches get24MonthWindow() in grading.js).
   function getMonthWindow(n) {
     const now   = new Date();
     const toD   = new Date(now.getFullYear(), now.getMonth() + 1, 0); // last day of current month
@@ -424,10 +425,17 @@ function startScheduler() {
 
     // Pre-warm invoice cache so first dashboard load is instant
     // 13 months covers same-month LY needed for territory growth (rep dashboards)
-    console.log('[scheduler] Pre-warming invoice cache...');
+    console.log('[scheduler] Pre-warming 13m invoice cache...');
     const { fromDate, toDate } = getMonthWindow(13);
     fetchInvoices(fromDate, toDate).catch((err) =>
-      console.error('[scheduler] Invoice cache pre-warm failed:', err.message)
+      console.error('[scheduler] Invoice cache pre-warm (13m) failed:', err.message)
+    );
+
+    // Pre-warm 24m invoice cache for grading (must match get24MonthWindow() in grading.js)
+    console.log('[scheduler] Pre-warming 24m invoice cache for grading...');
+    const { fromDate: from24, toDate: to24 } = getMonthWindow(25);
+    fetchInvoices(from24, to24).catch((err) =>
+      console.error('[scheduler] Invoice cache pre-warm (24m) failed:', err.message)
     );
 
     // Pre-warm item brand map
@@ -446,10 +454,16 @@ function startScheduler() {
 
     // Refresh invoice cache each hour to keep data current
     console.log('[scheduler] Refreshing invoice cache...');
-    const { fromDate, toDate } = getMonthWindow(13);
     invalidateInvoiceCache();
+    const { fromDate, toDate } = getMonthWindow(13);
     fetchInvoices(fromDate, toDate).catch((err) =>
-      console.error('[scheduler] Invoice cache refresh failed:', err.message)
+      console.error('[scheduler] Invoice cache refresh (13m) failed:', err.message)
+    );
+
+    // Refresh 24m invoice cache for grading
+    const { fromDate: from24, toDate: to24 } = getMonthWindow(25);
+    fetchInvoices(from24, to24).catch((err) =>
+      console.error('[scheduler] Invoice cache refresh (24m) failed:', err.message)
     );
 
     // Refresh item brand map every hour too (brand assignments rarely change,
