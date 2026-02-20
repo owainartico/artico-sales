@@ -117,7 +117,7 @@ async function visitsThisMonth(repId, monthFrom) {
 async function overdueStoreCount(repId) {
   const { rows } = await db.query(
     `SELECT COUNT(*) AS n FROM stores s
-     WHERE s.rep_id = $1 AND s.active = TRUE
+     WHERE s.rep_id = $1 AND s.active = TRUE AND s.is_prospect = FALSE
      AND NOT EXISTS (
        SELECT 1 FROM visits v
        WHERE v.store_id = s.id AND v.visited_at >= NOW() - INTERVAL '60 days'
@@ -349,12 +349,12 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
     lastSyncAt(),
     db.query(
       `SELECT rep_id, array_agg(zoho_contact_id::text) AS contact_ids
-       FROM stores WHERE active=TRUE AND rep_id IS NOT NULL GROUP BY rep_id`
+       FROM stores WHERE active=TRUE AND is_prospect=FALSE AND rep_id IS NOT NULL GROUP BY rep_id`
     ),
     // Grade distribution per rep
     db.query(
       `SELECT s.rep_id, s.grade, COUNT(*)::INTEGER AS count
-       FROM stores s WHERE s.active = TRUE AND s.rep_id IS NOT NULL
+       FROM stores s WHERE s.active = TRUE AND s.is_prospect = FALSE AND s.rep_id IS NOT NULL
        GROUP BY s.rep_id, s.grade`
     ).catch(() => ({ rows: [] })),
     // Quarterly grade trend

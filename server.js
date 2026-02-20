@@ -123,6 +123,15 @@ async function runMigrations() {
   } catch (err) {
     console.error('[migrations] Failed to apply grade schema migration:', err.message);
   }
+
+  // ── Prospect flag ─────────────────────────────────────────────────────────
+  try {
+    await pool.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS is_prospect BOOLEAN NOT NULL DEFAULT FALSE;`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_stores_prospect ON stores(is_prospect) WHERE is_prospect = TRUE;`);
+    console.log('[migrations] stores.is_prospect OK');
+  } catch (err) {
+    console.error('[migrations] Failed to apply is_prospect migration:', err.message);
+  }
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
@@ -153,12 +162,14 @@ app.listen(PORT, async () => {
   }, { timezone: 'Australia/Sydney' });
 
   // Auto-grade ungraded stores 90 seconds after startup (after invoice cache warms)
-  const { runAutoGrading, runQuarterlyGrading } = require('./src/services/grading');
+  const { runAutoGrading, runQuarterlyGrading, classifyProspects, promoteActiveProspects } = require('./src/services/grading');
   setTimeout(async () => {
     try {
       await runAutoGrading();
+      await classifyProspects();
+      await promoteActiveProspects();
     } catch (err) {
-      console.error('[startup] Auto-grading failed:', err.message);
+      console.error('[startup] Auto-grading/prospect classification failed:', err.message);
     }
   }, 90_000);
 
@@ -170,6 +181,8 @@ app.listen(PORT, async () => {
     console.log('[cron] Running quarterly grade reassessment');
     try {
       await runQuarterlyGrading();
+      await classifyProspects();
+      await promoteActiveProspects();
     } catch (err) {
       console.error('[cron] Quarterly grading error:', err.message);
     }

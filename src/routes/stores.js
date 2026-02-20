@@ -40,11 +40,18 @@ function monthBounds(ym) {
 router.get('/', requireAuth, async (req, res) => {
   try {
     const isManager = ['manager', 'executive'].includes(req.session.role);
-    const { q, grade, state, rep_id, visit_status } = req.query;
+    const { q, grade, state, rep_id, visit_status, show_prospects } = req.query;
 
     let conditions = ['s.active = TRUE'];
     let params = [];
     let p = 1;
+
+    // Prospect filter: default = hide prospects; show_prospects=true = only prospects
+    if (show_prospects === 'true') {
+      conditions.push(`s.is_prospect = TRUE`);
+    } else {
+      conditions.push(`s.is_prospect = FALSE`);
+    }
 
     if (!isManager) {
       conditions.push(`s.rep_id = $${p++}`);
@@ -58,7 +65,7 @@ router.get('/', requireAuth, async (req, res) => {
       conditions.push(`s.name ILIKE $${p++}`);
       params.push(`%${q.trim()}%`);
     }
-    if (grade) {
+    if (grade && show_prospects !== 'true') {
       conditions.push(`s.grade = $${p++}`);
       params.push(grade);
     }
@@ -69,7 +76,7 @@ router.get('/', requireAuth, async (req, res) => {
 
     const { rows } = await db.query(`
       SELECT
-        s.id, s.name, s.grade, s.grade_locked, s.channel_type, s.state, s.zoho_contact_id,
+        s.id, s.name, s.grade, s.grade_locked, s.is_prospect, s.channel_type, s.state, s.zoho_contact_id,
         s.rep_id, u.name AS rep_name,
         lv.visited_at AS last_visit_at,
         lv.note       AS last_visit_note,
@@ -246,7 +253,7 @@ router.get('/grade-review', requireAuth, requireRole('manager', 'executive'), as
         SELECT s.id, s.name, s.grade, s.state, s.zoho_contact_id, s.rep_id, u.name AS rep_name
         FROM stores s
         LEFT JOIN users u ON u.id = s.rep_id
-        WHERE s.active = TRUE
+        WHERE s.active = TRUE AND s.is_prospect = FALSE
         ORDER BY s.name
       `),
       db.query(`
@@ -456,6 +463,7 @@ router.get('/:id', requireAuth, async (req, res) => {
       name:             store.name,
       grade:            store.grade,
       grade_locked:     store.grade_locked || false,
+      is_prospect:      store.is_prospect   || false,
       channel_type:     store.channel_type,
       state:            store.state,
       zoho_contact_id:  store.zoho_contact_id,
@@ -473,6 +481,43 @@ router.get('/:id', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('Store detail error:', err.message);
     res.status(500).json({ error: 'Failed to load store' });
+  }
+});
+
+// ── POST /api/stores/:id/convert-prospect  (manager/exec only) ───────────────
+// Manually promote a prospect to an active customer at grade C.
+
+router.post('/:id/convert-prospect', requireAuth, requireRole('manager', 'executive'), async (req, res) => {
+  const storeId = parseInt(req.params.id);
+  if (isNaN(storeId)) return res.status(400).json({ error: 'Invalid store id' });
+
+  try {
+    const { rows } = await db.query(
+      `UPDATE stores
+       SET is_prospect = FALSE, grade = 'C'
+       WHERE id = $1 AND active = TRUE AND is_prospect = TRUE
+       RETURNING id, name, zoho_contact_id, rep_id`,
+      [storeId]
+    );
+
+    if (!rows[0]) return res.status(404).json({ error: 'Store not found or not a prospect' });
+    const store = rows[0];
+
+    const changedBy = req.session.userId ? String(req.session.userId) : 'manager';
+    const { logGradeChange, writeGradeToZoho } = require('../services/grading');
+
+    await logGradeChange(storeId, null, 'C', 'Manually converted from prospect to active customer', changedBy);
+
+    if (store.zoho_contact_id) {
+      writeGradeToZoho(store.zoho_contact_id, 'C').catch(err =>
+        console.error(`[stores] Zoho grade write failed for contact ${store.zoho_contact_id}:`, err.message)
+      );
+    }
+
+    res.json({ ok: true, store_id: storeId, grade: 'C', is_prospect: false });
+  } catch (err) {
+    console.error('Convert prospect error:', err.message);
+    res.status(500).json({ error: 'Failed to convert prospect' });
   }
 });
 

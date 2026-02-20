@@ -87,7 +87,7 @@ async function runAlert1(counts) {
     FROM stores s
     LEFT JOIN visits v ON v.store_id = s.id
     LEFT JOIN users u  ON u.id = s.rep_id
-    WHERE s.grade = 'A' AND s.active = TRUE
+    WHERE s.grade = 'A' AND s.active = TRUE AND s.is_prospect = FALSE
     GROUP BY s.id, s.name, s.rep_id, u.name
     HAVING MAX(v.visited_at) IS NULL OR EXTRACT(DAY FROM NOW() - MAX(v.visited_at)) >= 30
   `);
@@ -127,7 +127,7 @@ async function runAlert2(counts, invoices) {
     FROM stores s
     LEFT JOIN visits v ON v.store_id = s.id
     LEFT JOIN users u  ON u.id = s.rep_id
-    WHERE s.active = TRUE
+    WHERE s.active = TRUE AND s.is_prospect = FALSE
     GROUP BY s.id, s.name, s.rep_id, s.zoho_contact_id, u.name
     HAVING MAX(v.visited_at) IS NULL OR EXTRACT(DAY FROM NOW() - MAX(v.visited_at)) >= 45
   `);
@@ -185,7 +185,7 @@ async function runAlert3(counts, invoices) {
     SELECT s.id, s.name, s.rep_id, s.zoho_contact_id, u.name AS rep_name
     FROM stores s
     LEFT JOIN users u ON u.id = s.rep_id
-    WHERE s.active = TRUE
+    WHERE s.active = TRUE AND s.is_prospect = FALSE
   `);
 
   for (const store of stores) {
@@ -236,7 +236,7 @@ async function runAlert4(counts, invoices) {
     SELECT s.id, s.name, s.rep_id, s.zoho_contact_id, u.name AS rep_name
     FROM stores s
     LEFT JOIN users u ON u.id = s.rep_id
-    WHERE s.active = TRUE AND s.zoho_contact_id = ANY($1)
+    WHERE s.active = TRUE AND s.is_prospect = FALSE AND s.zoho_contact_id = ANY($1)
   `, [narrowCids]);
 
   const revenueMap = {};
@@ -330,7 +330,7 @@ async function runT2Alert1(counts, invoices) {
     SELECT s.id, s.name, s.rep_id, s.zoho_contact_id, u.name AS rep_name
     FROM stores s
     LEFT JOIN users u ON u.id = s.rep_id
-    WHERE s.active = TRUE
+    WHERE s.active = TRUE AND s.is_prospect = FALSE
   `);
 
   for (const store of stores) {
@@ -388,7 +388,7 @@ async function runT2Alert2(counts, invoices) {
     SELECT s.id, s.name, s.rep_id, s.zoho_contact_id, u.name AS rep_name
     FROM stores s
     LEFT JOIN users u ON u.id = s.rep_id
-    WHERE s.active = TRUE AND s.zoho_contact_id = ANY($1)
+    WHERE s.active = TRUE AND s.is_prospect = FALSE AND s.zoho_contact_id = ANY($1)
   `, [contactIds]);
 
   const storeByContactId = {};

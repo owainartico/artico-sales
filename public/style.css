@@ -936,6 +936,64 @@ body {
 .grade-badge--b { background: var(--grade-b); color: #1A1D2E; }
 .grade-badge--c { background: var(--color-border); color: var(--color-muted); }
 
+/* ── Prospect badge ─────────────────────────────────────────────── */
+.prospect-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  height: 22px;
+  border-radius: 11px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  background: #F0F4FF;
+  color: #5B7BB8;
+  border: 1px solid #C7D5F0;
+}
+.prospect-badge--header {
+  padding: 0 10px;
+  height: 26px;
+  border-radius: 13px;
+  font-size: 0.7rem;
+}
+
+/* ── Prospect filter toggle ─────────────────────────────────────── */
+.filter-prospect-btn {
+  height: 38px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.filter-prospect-btn.active {
+  border-color: #5B7BB8;
+  color: #5B7BB8;
+  background: #F0F4FF;
+}
+
+/* ── Prospect convert button ────────────────────────────────────── */
+.prospect-convert-btn {
+  padding: 6px 14px;
+  border-radius: var(--radius);
+  border: none;
+  background: var(--color-navy);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.prospect-convert-btn:active { opacity: 0.85; }
+
 /* ── Visit status colours ──────────────────────────────────────── */
 .visit-status--fresh   { color: var(--color-success); }
 .visit-status--warn    { color: var(--color-warning); }

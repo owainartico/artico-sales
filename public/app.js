@@ -1214,6 +1214,7 @@ let _storesGrade        = '';
 let _storesState        = '';
 let _storesVisitStatus  = '';
 let _storesRepFilter    = '';
+let _storesShowProspects = false;
 let _storesCurrentId    = null;
 let _storesCurrentData  = null;  // full store object from /api/stores/:id
 let _newDoorsMonth      = null;
@@ -1225,7 +1226,7 @@ async function loadStores() {
 
   // Reset search state on fresh load
   _storesSearch = ''; _storesGrade = ''; _storesState = '';
-  _storesVisitStatus = ''; _storesRepFilter = '';
+  _storesVisitStatus = ''; _storesRepFilter = ''; _storesShowProspects = false;
 
   page.innerHTML = `
     <!-- View toggle -->
@@ -1255,7 +1256,12 @@ async function loadStores() {
         ${isManager ? `
           <select class="form-select filter-select" id="stores-rep-filter" onchange="storesFilterChanged('rep', this.value)">
             <option value="">All Reps</option>
-          </select>` : ''}
+          </select>
+          <button class="filter-prospect-btn ${_storesShowProspects ? 'active' : ''}"
+                  id="prospect-toggle-btn"
+                  onclick="storesFilterChanged('prospects', null)">
+            ${_storesShowProspects ? 'Prospects' : 'Prospects'}
+          </button>` : ''}
       </div>
       <div id="stores-list">
         <div class="skeleton-block"></div>
@@ -1339,6 +1345,11 @@ function storesFilterChanged(key, value) {
   if (key === 'grade')        _storesGrade       = value;
   if (key === 'visit_status') _storesVisitStatus = value;
   if (key === 'rep')          _storesRepFilter   = value;
+  if (key === 'prospects') {
+    _storesShowProspects = !_storesShowProspects;
+    const btn = el('prospect-toggle-btn');
+    if (btn) btn.classList.toggle('active', _storesShowProspects);
+  }
   loadStoreList();
 }
 window.storesFilterChanged = storesFilterChanged;
@@ -1349,10 +1360,11 @@ async function loadStoreList() {
   wrap.innerHTML = '<div class="skeleton-block"></div>';
 
   const params = new URLSearchParams();
-  if (_storesSearch)      params.set('q', _storesSearch);
-  if (_storesGrade)       params.set('grade', _storesGrade);
-  if (_storesVisitStatus) params.set('visit_status', _storesVisitStatus);
-  if (_storesRepFilter)   params.set('rep_id', _storesRepFilter);
+  if (_storesSearch)        params.set('q', _storesSearch);
+  if (_storesGrade && !_storesShowProspects) params.set('grade', _storesGrade);
+  if (_storesVisitStatus && !_storesShowProspects) params.set('visit_status', _storesVisitStatus);
+  if (_storesRepFilter)     params.set('rep_id', _storesRepFilter);
+  if (_storesShowProspects) params.set('show_prospects', 'true');
 
   const stores = await api('GET', `/api/stores?${params}`);
 
@@ -1373,12 +1385,18 @@ async function loadStoreList() {
 
   const isManager = ['manager', 'executive'].includes(currentUser.role);
 
+  const countLabel = _storesShowProspects
+    ? `${stores.length} prospect${stores.length !== 1 ? 's' : ''}`
+    : `${stores.length} store${stores.length !== 1 ? 's' : ''}`;
+
   wrap.innerHTML = `
-    <div class="section-label">${stores.length} store${stores.length !== 1 ? 's' : ''}</div>
+    <div class="section-label">${countLabel}</div>
     ${stores.map(s => `
       <div class="card store-row" onclick="openStoreDetail(${s.id})">
         <div class="store-row__main">
-          <span class="grade-badge grade-badge--${(s.grade || 'c').toLowerCase()}">${s.grade || '?'}</span>
+          ${s.is_prospect
+            ? `<span class="prospect-badge">Prospect</span>`
+            : `<span class="grade-badge grade-badge--${(s.grade || 'c').toLowerCase()}">${s.grade || '?'}</span>`}
           <div class="store-row__info">
             <div class="store-row__name">${escHtml(s.name)}</div>
             <div class="store-row__sub text-sm text-muted">
@@ -1387,10 +1405,11 @@ async function loadStoreList() {
             </div>
           </div>
           <div class="store-row__visit">
-            <div class="text-sm ${visitStatusClass(s.days_since_visit)} fw-bold">
-              ${visitStatusLabel(s.days_since_visit)}
-            </div>
-            ${s.last_visit_at ? `<div class="text-xs text-muted">${new Date(s.last_visit_at).toLocaleDateString('en-AU', { day:'numeric', month:'short'})}</div>` : ''}
+            ${s.is_prospect ? '' : `
+              <div class="text-sm ${visitStatusClass(s.days_since_visit)} fw-bold">
+                ${visitStatusLabel(s.days_since_visit)}
+              </div>
+              ${s.last_visit_at ? `<div class="text-xs text-muted">${new Date(s.last_visit_at).toLocaleDateString('en-AU', { day:'numeric', month:'short'})}</div>` : ''}`}
           </div>
         </div>
       </div>`).join('')}`;
@@ -1421,16 +1440,19 @@ async function openStoreDetail(storeId) {
   _storesCurrentData = data;
   el('store-detail-name').textContent  = data.name;
   el('store-detail-meta').textContent  = [data.channel_type, data.state, data.rep_name].filter(Boolean).join(' · ');
-  if (data.grade) {
+  if (data.is_prospect) {
+    el('store-detail-grade').textContent = 'Prospect';
+    el('store-detail-grade').className   = 'prospect-badge prospect-badge--header';
+    el('store-detail-grade').title       = 'No invoice or visit history — not yet an active customer';
+  } else if (data.grade) {
     el('store-detail-grade').textContent = data.grade;
     el('store-detail-grade').className   = `grade-badge grade-badge--${data.grade.toLowerCase()}`;
+    if (data.grade_locked) {
+      el('store-detail-grade').title = 'Grade locked — will not change automatically';
+    }
   } else {
     el('store-detail-grade').textContent = '?';
     el('store-detail-grade').className   = 'grade-badge grade-badge--c';
-  }
-  // Show lock indicator in header badge
-  if (data.grade_locked) {
-    el('store-detail-grade').title = 'Grade locked — will not change automatically';
   }
 
   const trendHtml = data.trend_pct !== null
@@ -1482,7 +1504,14 @@ async function openStoreDetail(storeId) {
         <span class="text-muted text-sm">Last Visit Note</span>
         <span class="text-sm">${data.visit_history[0]?.note ? escHtml(data.visit_history[0].note) : '—'}</span>
       </div>
-      ${['manager','executive'].includes(currentUser.role) ? `
+      ${['manager','executive'].includes(currentUser.role) && data.is_prospect ? `
+      <div class="detail-kv-row" style="margin-top:var(--space-2);padding-top:var(--space-2);border-top:1px solid var(--color-border);">
+        <span class="text-muted text-sm">No invoice or visit history</span>
+        <button class="prospect-convert-btn" onclick="convertProspect(${data.id})">
+          Convert to Customer
+        </button>
+      </div>` : ''}
+      ${['manager','executive'].includes(currentUser.role) && !data.is_prospect ? `
       <div class="detail-kv-row" style="margin-top:var(--space-2);padding-top:var(--space-2);border-top:1px solid var(--color-border);">
         <span class="text-muted text-sm">${data.grade_locked ? '🔒 Grade Locked' : '🔓 Grade Unlocked'}</span>
         <button class="store-lock-btn ${data.grade_locked ? 'store-lock-btn--locked' : ''}"
@@ -1566,6 +1595,20 @@ async function toggleGradeLock(storeId, currentlyLocked) {
   openStoreDetail(storeId);
 }
 window.toggleGradeLock = toggleGradeLock;
+
+async function convertProspect(storeId) {
+  if (!confirm('Convert this prospect to an active customer? They will be assigned grade C.')) return;
+
+  const result = await api('POST', `/api/stores/${storeId}/convert-prospect`);
+  if (!result || result.error) {
+    alert(result?.error || 'Failed to convert prospect. Please try again.');
+    return;
+  }
+
+  // Refresh store detail to show grade C
+  openStoreDetail(storeId);
+}
+window.convertProspect = convertProspect;
 
 // ── New Doors ─────────────────────────────────────────────────────
 async function loadNewDoors(month) {

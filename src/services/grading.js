@@ -201,7 +201,7 @@ async function runAutoGrading() {
     db.query(`
       SELECT id, name, grade, grade_locked, zoho_contact_id, rep_id
       FROM stores
-      WHERE active = TRUE AND grade IS NULL AND grade_locked = FALSE
+      WHERE active = TRUE AND grade IS NULL AND is_prospect = FALSE AND grade_locked = FALSE
     `),
     fetchInvoices(windowFrom, windowTo).catch(() => []),
     db.query(`SELECT store_id, MAX(visited_at) AS last_visit FROM visits GROUP BY store_id`),
@@ -226,7 +226,7 @@ async function runQuarterlyGrading() {
     db.query(`
       SELECT id, name, grade, grade_locked, zoho_contact_id, rep_id
       FROM stores
-      WHERE active = TRUE AND grade_locked = FALSE
+      WHERE active = TRUE AND is_prospect = FALSE AND grade_locked = FALSE
     `),
     fetchInvoices(windowFrom, windowTo).catch(() => []),
     db.query(`SELECT store_id, MAX(visited_at) AS last_visit FROM visits GROUP BY store_id`),
@@ -239,10 +239,106 @@ async function runQuarterlyGrading() {
   return result;
 }
 
+// ── Prospect classification ───────────────────────────────────────────────────
+
+/**
+ * 24-month invoice window helper.
+ */
+function get24MonthWindow() {
+  const now  = new Date();
+  const from = new Date(now.getFullYear() - 2, now.getMonth(), 1);
+  const pad  = n => String(n).padStart(2, '0');
+  return {
+    from: `${from.getFullYear()}-${pad(from.getMonth() + 1)}-01`,
+    to:   now.toISOString().slice(0, 10),
+  };
+}
+
+/**
+ * Mark stores as prospects: grade IS NULL + no invoice in 24m + no visit ever.
+ * Safe to run repeatedly — only affects non-prospect, non-locked stores.
+ */
+async function classifyProspects() {
+  console.log('[grading] classifyProspects: checking ungraded stores…');
+
+  const { rows: candidates } = await db.query(`
+    SELECT s.id, s.name, s.zoho_contact_id,
+           (SELECT COUNT(*) FROM visits WHERE store_id = s.id LIMIT 1)::INTEGER AS visit_count
+    FROM stores s
+    WHERE s.active = TRUE AND s.grade IS NULL AND s.is_prospect = FALSE AND s.grade_locked = FALSE
+  `);
+
+  if (!candidates.length) {
+    console.log('[grading] classifyProspects: nothing to classify');
+    return { prospected: 0 };
+  }
+
+  const { from, to } = get24MonthWindow();
+  const invoices = await fetchInvoices(from, to).catch(() => []);
+  const activeContacts = new Set(invoices.map(i => String(i.customer_id)));
+
+  let prospected = 0;
+  for (const store of candidates) {
+    const hasInvoice = store.zoho_contact_id && activeContacts.has(String(store.zoho_contact_id));
+    if (!hasInvoice && store.visit_count === 0) {
+      await db.query(`UPDATE stores SET is_prospect = TRUE WHERE id = $1`, [store.id]);
+      prospected++;
+    }
+  }
+
+  console.log(`[grading] classifyProspects: ${prospected} store(s) marked as prospects`);
+  return { prospected };
+}
+
+/**
+ * Promote prospects that have gained invoice or visit activity → assign grade C.
+ */
+async function promoteActiveProspects() {
+  console.log('[grading] promoteActiveProspects: checking prospects for activity…');
+
+  const { rows: prospects } = await db.query(`
+    SELECT s.id, s.name, s.zoho_contact_id, s.rep_id,
+           (SELECT COUNT(*) FROM visits WHERE store_id = s.id LIMIT 1)::INTEGER AS visit_count
+    FROM stores s
+    WHERE s.active = TRUE AND s.is_prospect = TRUE
+  `);
+
+  if (!prospects.length) {
+    console.log('[grading] promoteActiveProspects: no prospects to check');
+    return { promoted: 0 };
+  }
+
+  const { from, to } = get24MonthWindow();
+  const invoices = await fetchInvoices(from, to).catch(() => []);
+  const activeContacts = new Set(invoices.map(i => String(i.customer_id)));
+
+  let promoted = 0;
+  for (const store of prospects) {
+    const hasInvoice = store.zoho_contact_id && activeContacts.has(String(store.zoho_contact_id));
+    if (!hasInvoice && store.visit_count === 0) continue;
+
+    // Has invoice or visit activity — promote to active customer with grade C
+    await db.query(
+      `UPDATE stores SET is_prospect = FALSE, grade = 'C' WHERE id = $1`,
+      [store.id]
+    );
+    await logGradeChange(store.id, null, 'C', 'Promoted from prospect — first activity recorded', 'system');
+    if (store.zoho_contact_id) {
+      writeGradeToZoho(store.zoho_contact_id, 'C').catch(() => {});
+    }
+    promoted++;
+  }
+
+  console.log(`[grading] promoteActiveProspects: ${promoted} prospect(s) promoted to grade C`);
+  return { promoted };
+}
+
 module.exports = {
   calculateGrade,
   writeGradeToZoho,
   logGradeChange,
   runAutoGrading,
   runQuarterlyGrading,
+  classifyProspects,
+  promoteActiveProspects,
 };
