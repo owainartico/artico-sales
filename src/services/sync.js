@@ -237,25 +237,27 @@ async function syncStores({ force = false } = {}) {
       const channelType = getCustomField(customFields, 'cf_category');
 
       // Zoho Books billing_address is an object: { address, city, state, zip, country, fax }
-      const state = contact.billing_address?.state || null;
+      const state    = contact.billing_address?.state || null;
+      const postcode = contact.billing_address?.zip   || null;
 
       // Assigned rep on contact (confirmed api_name: cf_sales_rep)
       const repId = findRepId(getCustomField(customFields, 'cf_sales_rep'));
 
       const { rows: [row] } = await db.query(
         `INSERT INTO stores
-           (zoho_contact_id, name, channel_type, grade, is_prospect, state, rep_id, last_synced_at)
-         VALUES ($1, $2, $3, $4, ($4 IS NULL), $5, $6, NOW())
+           (zoho_contact_id, name, channel_type, grade, is_prospect, state, postcode, rep_id, last_synced_at)
+         VALUES ($1, $2, $3, $4, ($4 IS NULL), $5, $6, $7, NOW())
          ON CONFLICT (zoho_contact_id) DO UPDATE SET
            name           = EXCLUDED.name,
            channel_type   = EXCLUDED.channel_type,
            grade          = COALESCE(EXCLUDED.grade, stores.grade),
            is_prospect    = CASE WHEN EXCLUDED.grade IS NOT NULL THEN FALSE ELSE stores.is_prospect END,
            state          = EXCLUDED.state,
+           postcode       = EXCLUDED.postcode,
            rep_id         = EXCLUDED.rep_id,
            last_synced_at = NOW()
          RETURNING id, name, zoho_contact_id, rep_id, is_prospect, (xmax = 0) AS is_new_insert`,
-        [zohoContactId, name, channelType, zohoGrade, state, repId]
+        [zohoContactId, name, channelType, zohoGrade, state, postcode, repId]
       );
 
       upserted++;

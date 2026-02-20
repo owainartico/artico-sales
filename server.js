@@ -49,6 +49,7 @@ app.use('/api/products',  require('./src/routes/products'));
 app.use('/api/scoreboard', require('./src/routes/scoreboard'));
 app.use('/api/grades',    require('./src/routes/grades'));
 app.use('/api/kpi',       require('./src/routes/kpi'));
+app.use('/api/planner',   require('./src/routes/planner'));
 app.use('/api',           require('./src/routes/zoho'));
 
 // ── SPA catch-all — serve index.html for unknown non-API paths ────────────────
@@ -132,6 +133,31 @@ async function runMigrations() {
     console.log('[migrations] stores.is_prospect OK');
   } catch (err) {
     console.error('[migrations] Failed to apply is_prospect migration:', err.message);
+  }
+
+  // ── Call Planner schema ───────────────────────────────────────────────────
+  try {
+    await pool.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS postcode VARCHAR(10);`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS call_plan_items (
+        id             SERIAL       PRIMARY KEY,
+        rep_id         INTEGER      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        store_id       INTEGER      NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+        planned_week   DATE         NOT NULL,
+        day_of_week    SMALLINT     NOT NULL CHECK (day_of_week BETWEEN 1 AND 5),
+        position       SMALLINT     NOT NULL DEFAULT 1,
+        status         VARCHAR(20)  NOT NULL DEFAULT 'suggested'
+                                    CHECK (status IN ('suggested','confirmed','completed','skipped')),
+        confirmed_time VARCHAR(10),
+        notes          TEXT,
+        created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        UNIQUE (rep_id, store_id, planned_week)
+      );
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_call_plan_rep_week ON call_plan_items(rep_id, planned_week);`);
+    console.log('[migrations] call_plan_items OK');
+  } catch (err) {
+    console.error('[migrations] Failed to apply call_plan_items migration:', err.message);
   }
 }
 

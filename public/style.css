@@ -1854,3 +1854,180 @@ body {
 }
 .kpi-team-table tbody tr:last-child td { border-bottom: none; }
 .kpi-team__rep { font-weight: 600; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Call Planner
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Week nav bar ────────────────────────────────────────────── */
+.planner-week-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+}
+.planner-week-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-text);
+  text-align: center;
+  flex: 1;
+}
+
+/* ── Actions row ─────────────────────────────────────────────── */
+.planner-actions-row {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+/* ── Manager bar ─────────────────────────────────────────────── */
+.planner-manager-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) 0 var(--space-1);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-2);
+}
+
+/* ── Day card ────────────────────────────────────────────────── */
+.plan-day-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-3);
+  overflow: hidden;
+}
+.plan-day-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+}
+.plan-day-name {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--color-navy);
+}
+.plan-day-count {
+  font-size: 0.75rem;
+  color: var(--color-muted);
+}
+
+/* ── Plan item row ───────────────────────────────────────────── */
+.plan-item {
+  display: grid;
+  grid-template-columns: 28px 1fr auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  transition: background 0.15s;
+}
+.plan-item:last-child { border-bottom: none; }
+.plan-item:active { background: var(--color-bg); }
+
+.plan-item--confirmed { background: #EFF6FF; }
+.plan-item--completed { background: #ECFDF5; opacity: 0.85; }
+.plan-item--skipped   { opacity: 0.45; }
+
+.plan-item__info {
+  min-width: 0;
+}
+.plan-item__name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-text);
+}
+.plan-item__meta {
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.plan-item__time {
+  display: inline-block;
+  margin-left: 6px;
+  color: var(--color-navy);
+  font-weight: 600;
+}
+
+/* ── Item move buttons ───────────────────────────────────────── */
+.plan-item__move {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.plan-item__move-btn {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  width: 22px;
+  height: 20px;
+  font-size: 0.7rem;
+  cursor: pointer;
+  color: var(--color-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+}
+.plan-item__move-btn:active {
+  background: var(--color-border);
+}
+
+/* ── Item actions button ─────────────────────────────────────── */
+.plan-item__actions-btn {
+  background: none;
+  border: none;
+  font-size: 1.25rem;
+  color: var(--color-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+}
+
+/* ── Submit / submitted ──────────────────────────────────────── */
+.planner-submit-btn {
+  margin-bottom: var(--space-2);
+}
+.planner-submitted-badge {
+  background: #ECFDF5;
+  color: #065F46;
+  border: 1px solid #6EE7B7;
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  text-align: center;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: var(--space-2);
+}
+
+/* ── Add store day-selector active button ────────────────────── */
+.add-day-btn.active {
+  background: var(--color-navy);
+  color: #fff;
+  border-color: var(--color-navy);
+}
+
+/* ── Danger button ───────────────────────────────────────────── */
+.btn--danger {
+  background: #FEE2E2;
+  color: #991B1B;
+  border: 1px solid #FECACA;
+}
+.btn--danger:active {
+  background: #FECACA;
+}
