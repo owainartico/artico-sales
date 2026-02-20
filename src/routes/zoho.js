@@ -412,4 +412,79 @@ router.post('/debug/cache-refresh', requireRole('executive'), (req, res) => {
   });
 });
 
+// ── GET /api/debug/planner-schema ────────────────────────────────────────────
+// Verifies call_plan_items table and stores.postcode column exist. Executive only.
+
+router.get('/debug/planner-schema', requireRole('executive'), async (req, res) => {
+  const out = {};
+
+  try {
+    const { rows } = await db.query(`
+      SELECT column_name, data_type FROM information_schema.columns
+      WHERE table_name = 'stores' AND column_name = 'postcode'
+    `);
+    out.stores_postcode = rows.length > 0
+      ? { exists: true, type: rows[0].data_type }
+      : { exists: false, note: 'Column missing — run POST /api/debug/run-planner-migration to fix' };
+  } catch (err) {
+    out.stores_postcode_error = err.message;
+  }
+
+  try {
+    const { rows } = await db.query(`SELECT COUNT(*)::INTEGER AS count FROM call_plan_items`);
+    out.call_plan_items = { exists: true, row_count: rows[0].count };
+  } catch (err) {
+    out.call_plan_items = { exists: false, error: err.message };
+  }
+
+  try {
+    const { rows } = await db.query(`SELECT COUNT(*)::INTEGER AS count FROM weekly_plans`);
+    out.weekly_plans = { exists: true, row_count: rows[0].count };
+  } catch (err) {
+    out.weekly_plans = { exists: false, error: err.message };
+  }
+
+  res.json(out);
+});
+
+// ── POST /api/debug/run-planner-migration ─────────────────────────────────────
+// Re-runs the call_plan_items migration in case it failed at startup. Executive only.
+
+router.post('/debug/run-planner-migration', requireRole('executive'), async (req, res) => {
+  const results = [];
+
+  try {
+    await db.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS postcode VARCHAR(10);`);
+    results.push('stores.postcode: OK');
+  } catch (err) {
+    results.push(`stores.postcode ERROR: ${err.message}`);
+  }
+
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS call_plan_items (
+        id             SERIAL       PRIMARY KEY,
+        rep_id         INTEGER      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        store_id       INTEGER      NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+        planned_week   DATE         NOT NULL,
+        day_of_week    SMALLINT     NOT NULL CHECK (day_of_week BETWEEN 1 AND 5),
+        position       SMALLINT     NOT NULL DEFAULT 1,
+        status         VARCHAR(20)  NOT NULL DEFAULT 'suggested'
+                                    CHECK (status IN ('suggested','confirmed','completed','skipped')),
+        confirmed_time VARCHAR(10),
+        notes          TEXT,
+        created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        UNIQUE (rep_id, store_id, planned_week)
+      );
+    `);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_call_plan_rep_week ON call_plan_items(rep_id, planned_week);`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_call_plan_store ON call_plan_items(store_id);`);
+    results.push('call_plan_items: OK');
+  } catch (err) {
+    results.push(`call_plan_items ERROR: ${err.message}`);
+  }
+
+  res.json({ ok: true, results });
+});
+
 module.exports = router;

@@ -75,7 +75,7 @@ router.get('/week', requireAuth, async (req, res) => {
     res.json({ week, rep_id: repId, submitted: !!planRow, days });
   } catch (err) {
     console.error('[planner] week error:', err.message);
-    res.status(500).json({ error: 'Failed to load plan' });
+    res.status(500).json({ error: err.message });
   }
 });
 

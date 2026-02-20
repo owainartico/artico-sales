@@ -3137,7 +3137,7 @@ function renderPlannerPage(page, data, isManager) {
       ? `Viewing: ${_plannerRepName}`
       : 'My plan';
     const rightBtn = _plannerRepId
-      ? `<button class="btn btn--ghost btn--sm" onclick="_plannerRepId=null;_plannerRepName=null;loadPlanner()">My Plan</button>`
+      ? `<button class="btn btn--ghost btn--sm" onclick="resetPlannerToSelf()">My Plan</button>`
       : `<button class="btn btn--ghost btn--sm" onclick="openPlannerTeamView()">Team View</button>`;
     managerBar = `
       <div class="planner-manager-bar">
@@ -3439,11 +3439,11 @@ async function searchAddPlanStores() {
     const grade = s.grade || 'P';
     const meta = [s.state, s.postcode, s.days_since_visit != null ? `${s.days_since_visit}d overdue` : ''].filter(Boolean).join(' · ');
     return `
-      <div class="store-pick-item" onclick="addStoreToPlan(${s.id})">
-        <span class="grade-badge grade-badge--${grade}" style="margin-right:8px;">${grade}</span>
-        <div style="flex:1;min-width:0;">
-          <div class="store-pick-item__name">${s.name}</div>
-          <div class="store-pick-item__meta">${meta}</div>
+      <div class="store-pick-row" onclick="addStoreToPlan(${s.id})">
+        <span class="grade-badge grade-badge--${grade}" style="flex-shrink:0;">${grade}</span>
+        <div class="store-pick-row__info">
+          <div style="font-weight:600;font-size:0.875rem;">${s.name}</div>
+          <div style="font-size:0.75rem;color:var(--color-muted);">${meta}</div>
         </div>
       </div>`;
   }).join('');
@@ -3553,6 +3553,13 @@ async function viewRepPlan(repId, repName) {
 }
 window.viewRepPlan = viewRepPlan;
 
+function resetPlannerToSelf() {
+  _plannerRepId   = null;
+  _plannerRepName = null;
+  loadPlanner();
+}
+window.resetPlannerToSelf = resetPlannerToSelf;
+
 // ── Expose globals for inline onclick handlers ────────────────────────────────
 window.openUserModal      = openUserModal;
 window.resetPassword      = resetPassword;
@@ -3587,6 +3594,7 @@ window.shiftPlannerWeek    = shiftPlannerWeek;
 window.openPlannerTeamView = openPlannerTeamView;
 window.shiftPlannerTeamWeek = shiftPlannerTeamWeek;
 window.viewRepPlan         = viewRepPlan;
+window.resetPlannerToSelf  = resetPlannerToSelf;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 boot();
