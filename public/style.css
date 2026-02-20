@@ -932,33 +932,11 @@ body {
   color: #fff;
   background: var(--color-muted);
 }
-.grade-badge--a { background: var(--grade-a); }
-.grade-badge--b { background: var(--grade-b); color: #1A1D2E; }
-.grade-badge--c { background: var(--color-border); color: var(--color-muted); }
-
-/* ── Prospect badge ─────────────────────────────────────────────── */
-.prospect-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 7px;
-  height: 22px;
-  border-radius: 11px;
-  font-size: 0.65rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  flex-shrink: 0;
-  background: #F0F4FF;
-  color: #5B7BB8;
-  border: 1px solid #C7D5F0;
-}
-.prospect-badge--header {
-  padding: 0 10px;
-  height: 26px;
-  border-radius: 13px;
-  font-size: 0.7rem;
-}
+.grade-badge--a  { background: var(--grade-a); }
+.grade-badge--b  { background: var(--grade-b); color: #1A1D2E; }
+.grade-badge--c  { background: var(--color-border); color: var(--color-muted); }
+.grade-badge--p  { background: #E2E8F0; color: #64748B; }   /* Prospect — grey P */
+.grade-badge--lg { width: 28px; height: 28px; font-size: 0.8rem; } /* larger for detail header */
 
 /* ── Prospect filter toggle ─────────────────────────────────────── */
 .filter-prospect-btn {
@@ -976,9 +954,9 @@ body {
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 .filter-prospect-btn.active {
-  border-color: #5B7BB8;
-  color: #5B7BB8;
-  background: #F0F4FF;
+  border-color: #94A3B8;
+  color: #475569;
+  background: #F1F5F9;
 }
 
 /* ── Prospect convert button ────────────────────────────────────── */

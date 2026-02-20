@@ -1394,9 +1394,7 @@ async function loadStoreList() {
     ${stores.map(s => `
       <div class="card store-row" onclick="openStoreDetail(${s.id})">
         <div class="store-row__main">
-          ${s.is_prospect
-            ? `<span class="prospect-badge">Prospect</span>`
-            : `<span class="grade-badge grade-badge--${(s.grade || 'c').toLowerCase()}">${s.grade || '?'}</span>`}
+          <span class="grade-badge grade-badge--${s.is_prospect ? 'p' : (s.grade || 'c').toLowerCase()}">${s.is_prospect ? 'P' : (s.grade || '?')}</span>
           <div class="store-row__info">
             <div class="store-row__name">${escHtml(s.name)}</div>
             <div class="store-row__sub text-sm text-muted">
@@ -1441,18 +1439,18 @@ async function openStoreDetail(storeId) {
   el('store-detail-name').textContent  = data.name;
   el('store-detail-meta').textContent  = [data.channel_type, data.state, data.rep_name].filter(Boolean).join(' · ');
   if (data.is_prospect) {
-    el('store-detail-grade').textContent = 'Prospect';
-    el('store-detail-grade').className   = 'prospect-badge prospect-badge--header';
-    el('store-detail-grade').title       = 'No invoice or visit history — not yet an active customer';
+    el('store-detail-grade').textContent = 'P';
+    el('store-detail-grade').className   = 'grade-badge grade-badge--p grade-badge--lg';
+    el('store-detail-grade').title       = 'Prospect — no orders or visits in 24 months';
   } else if (data.grade) {
     el('store-detail-grade').textContent = data.grade;
-    el('store-detail-grade').className   = `grade-badge grade-badge--${data.grade.toLowerCase()}`;
+    el('store-detail-grade').className   = `grade-badge grade-badge--${data.grade.toLowerCase()} grade-badge--lg`;
     if (data.grade_locked) {
       el('store-detail-grade').title = 'Grade locked — will not change automatically';
     }
   } else {
     el('store-detail-grade').textContent = '?';
-    el('store-detail-grade').className   = 'grade-badge grade-badge--c';
+    el('store-detail-grade').className   = 'grade-badge grade-badge--c grade-badge--lg';
   }
 
   const trendHtml = data.trend_pct !== null

@@ -3,7 +3,7 @@
 const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const db = require('../db');
-const { runAutoGrading, runQuarterlyGrading } = require('../services/grading');
+const { runAutoGrading, runQuarterlyGrading, classifyProspects, promoteActiveProspects, downgradeInactiveToProspect } = require('../services/grading');
 
 const router = express.Router();
 
@@ -133,8 +133,19 @@ router.get('/report', requireAuth, requireRole('manager', 'executive'), async (r
 
 router.post('/run-auto', requireAuth, requireRole('executive'), async (req, res) => {
   try {
-    const result = await runAutoGrading();
-    res.json({ ok: true, ...result });
+    const [auto, prospects, promote, lapsed] = await Promise.allSettled([
+      runAutoGrading(),
+      classifyProspects(),
+      promoteActiveProspects(),
+      downgradeInactiveToProspect(),
+    ]);
+    res.json({
+      ok: true,
+      auto_grade:    auto.value    || { error: auto.reason?.message },
+      classify:      prospects.value || { error: prospects.reason?.message },
+      promote:       promote.value || { error: promote.reason?.message },
+      lapsed:        lapsed.value  || { error: lapsed.reason?.message },
+    });
   } catch (err) {
     console.error('Run auto-grade error:', err.message);
     res.status(500).json({ error: 'Auto-grading failed' });

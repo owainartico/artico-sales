@@ -162,12 +162,13 @@ app.listen(PORT, async () => {
   }, { timezone: 'Australia/Sydney' });
 
   // Auto-grade ungraded stores 90 seconds after startup (after invoice cache warms)
-  const { runAutoGrading, runQuarterlyGrading, classifyProspects, promoteActiveProspects } = require('./src/services/grading');
+  const { runAutoGrading, runQuarterlyGrading, classifyProspects, promoteActiveProspects, downgradeInactiveToProspect } = require('./src/services/grading');
   setTimeout(async () => {
     try {
-      await runAutoGrading();
-      await classifyProspects();
-      await promoteActiveProspects();
+      await runAutoGrading();              // grade all null-grade active stores
+      await classifyProspects();            // mark remaining null-grade stores as prospects
+      await promoteActiveProspects();       // un-prospect any that now have activity
+      await downgradeInactiveToProspect();  // downgrade lapsed graded stores → prospect
     } catch (err) {
       console.error('[startup] Auto-grading/prospect classification failed:', err.message);
     }
@@ -183,6 +184,7 @@ app.listen(PORT, async () => {
       await runQuarterlyGrading();
       await classifyProspects();
       await promoteActiveProspects();
+      await downgradeInactiveToProspect();
     } catch (err) {
       console.error('[cron] Quarterly grading error:', err.message);
     }
