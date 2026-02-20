@@ -48,6 +48,7 @@ app.use('/api/alerts',    require('./src/routes/alerts'));
 app.use('/api/products',  require('./src/routes/products'));
 app.use('/api/scoreboard', require('./src/routes/scoreboard'));
 app.use('/api/grades',    require('./src/routes/grades'));
+app.use('/api/kpi',       require('./src/routes/kpi'));
 app.use('/api',           require('./src/routes/zoho'));
 
 // ── SPA catch-all — serve index.html for unknown non-API paths ────────────────

@@ -326,6 +326,10 @@ async function loadDashboard(force = false) {
 
   // Load alerts after dashboard is visible — failure here won't break the dashboard
   loadDashboardAlerts();
+
+  // Load KPI data async — won't block dashboard display
+  if (isManager) loadKpiTeam();
+  else            loadKpiCard();
 }
 
 function refreshDashboard() { loadDashboard(true); }
@@ -503,6 +507,9 @@ function renderRepDashboard(page, d) {
         <div class="stat-mini__lbl">60d Unvisited</div>
       </div>
     </div>
+
+    <!-- KPI card placeholder (filled by loadKpiCard) -->
+    <div id="kpi-card-wrap"></div>
 
     <!-- Alerts placeholder (filled by loadDashboardAlerts) -->
     <div id="alerts-container"><div class="skeleton-block skeleton-block--sm" style="margin-top:var(--space-4);"></div></div>`;
@@ -715,6 +722,9 @@ function renderTeamDashboard(page, d) {
       <div class="card__title">New Customers This Month</div>
       ${doorRows}
     </div>
+
+    <!-- KPI team placeholder (filled by loadKpiTeam) -->
+    <div id="kpi-team-wrap"></div>
 
     <!-- Alerts placeholder (filled by loadDashboardAlerts) -->
     <div id="alerts-container"><div class="skeleton-block skeleton-block--sm" style="margin-top:var(--space-4);"></div></div>`;
@@ -1831,6 +1841,7 @@ async function loadTargets() {
 
   renderTargetGrid(wrap);
   renderBrandTargets();
+  loadIncentiveTargets(targetReps);
 }
 
 function renderTargetGrid(wrap) {
@@ -2649,6 +2660,333 @@ async function runImport() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  KPI INCENTIVE TRACKER
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Rep KPI card ──────────────────────────────────────────────────
+
+async function loadKpiCard() {
+  const wrap = el('kpi-card-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="skeleton-block" style="margin-top:var(--space-4);height:220px;"></div>';
+  const data = await api('GET', '/api/kpi/my');
+  if (!data || data.error) { wrap.innerHTML = ''; return; }
+  renderKpiCard(data);
+}
+
+function kpiStatusClass(pct, target) {
+  if (pct === null || pct === undefined) return 'grey';
+  if (pct >= target) return 'green';
+  if (pct >= target - 25) return 'amber';
+  return 'red';
+}
+
+function renderKpiCard(data) {
+  const wrap = el('kpi-card-wrap');
+  if (!wrap) return;
+
+  const { quarter_label, targets, actuals } = data;
+
+  const kpiRows = [];
+
+  // 1. New Customers
+  const ncAct = actuals.new_customers.actual;
+  const ncPct = actuals.new_customers.pct;
+  const ncCls = kpiStatusClass(ncPct, 100);
+  kpiRows.push(kpiRow('New Customers', `${ncAct} / ${targets.new_customers}`, ncPct, ncCls));
+
+  // 2. Reactivations
+  const rxAct = actuals.reactivations.actual;
+  const rxPct = actuals.reactivations.pct;
+  const rxCls = kpiStatusClass(rxPct, 100);
+  kpiRows.push(kpiRow('Reactivations', `${rxAct} / ${targets.reactivations}`, rxPct, rxCls));
+
+  // 3. Coverage
+  const cov = actuals.coverage;
+  const covPct = cov.pct;
+  const covCls = kpiStatusClass(covPct, targets.coverage_pct);
+  kpiRows.push(kpiRow('Territory Coverage', `${cov.covered} / ${cov.total} stores`, covPct, covCls));
+
+  // 4. Weekly Plan
+  const wp = actuals.weekly_plan;
+  const wpCls = wp.submitted ? 'green' : 'red';
+  const wpLabel = wp.submitted ? 'Submitted' : 'Not submitted';
+  const wpAction = !wp.submitted
+    ? `<button class="btn btn--sm btn--accent" style="padding:2px 10px;font-size:12px;" onclick="submitWeeklyPlan()">Submit</button>`
+    : '';
+  kpiRows.push(`
+    <div class="kpi-row">
+      <div class="kpi-dot kpi-dot--${wpCls}"></div>
+      <div class="kpi-row__label">Weekly Plan</div>
+      <div class="kpi-row__value">${wpLabel} ${wpAction}</div>
+    </div>`);
+
+  // 5. Territory Growth
+  const gr = actuals.growth;
+  const grPct = gr.pct;
+  const grCls = grPct === null ? 'grey' : grPct >= targets.growth_pct ? 'green' : grPct >= 0 ? 'amber' : 'red';
+  const grLabel = grPct === null ? '—' : `${grPct >= 0 ? '+' : ''}${grPct}%`;
+  kpiRows.push(kpiRow('Territory Growth', grLabel, grPct === null ? null : Math.min(Math.max(grPct + 100, 0), 200) / 2, grCls, true));
+
+  wrap.innerHTML = `
+    <div class="section-label" style="margin-top:var(--space-4);">KPI Tracker</div>
+    <div class="card kpi-card">
+      <div class="kpi-card__header">
+        <span class="kpi-card__title">${escHtml(quarter_label)}</span>
+        <span class="kpi-card__sub text-muted text-sm">Quarterly incentive</span>
+      </div>
+      <div class="kpi-rows">
+        ${kpiRows.join('')}
+      </div>
+    </div>`;
+}
+
+function kpiRow(label, value, pct, cls, noBar) {
+  const barHtml = noBar ? '' : `<div class="progress kpi-row__bar"><div class="progress__fill progress__fill--${cls === 'green' ? 'success' : cls === 'amber' ? 'warning' : cls === 'red' ? 'danger' : 'muted'}" style="width:${Math.min(pct ?? 0, 100)}%"></div></div>`;
+  return `
+    <div class="kpi-row">
+      <div class="kpi-dot kpi-dot--${cls}"></div>
+      <div class="kpi-row__label">${label}</div>
+      <div class="kpi-row__value">${value}</div>
+      ${barHtml}
+    </div>`;
+}
+
+async function submitWeeklyPlan() {
+  const result = await api('POST', '/api/kpi/weekly-plan');
+  if (!result || result.error) {
+    toast(result?.error || 'Failed to submit plan.');
+    return;
+  }
+  toast('Weekly plan submitted!');
+  loadKpiCard();
+}
+
+// ── Incentive target grid (manager/exec, in Targets tab) ──────────
+
+let _incentiveTargets = [];
+
+async function loadIncentiveTargets(reps) {
+  const wrap = el('incentive-target-wrap');
+  if (!wrap) return;
+  if (!currentUser || !['manager', 'executive'].includes(currentUser.role)) {
+    wrap.innerHTML = '';
+    return;
+  }
+  if (!reps || reps.length === 0) { wrap.innerHTML = ''; return; }
+
+  const targets = await api('GET', '/api/kpi/targets');
+  if (!targets || targets.error) { wrap.innerHTML = '<p class="text-muted" style="padding:16px;">Could not load KPI targets.</p>'; return; }
+  _incentiveTargets = targets;
+
+  // Build quarter selector: current quarter ± 2 quarters
+  const now = new Date();
+  const curQ = Math.floor(now.getMonth() / 3) + 1;
+  const curY = now.getFullYear();
+  const quarters = [];
+  for (let offset = -2; offset <= 2; offset++) {
+    let q = curQ + offset;
+    let y = curY;
+    while (q < 1) { q += 4; y--; }
+    while (q > 4) { q -= 4; y++; }
+    quarters.push({ q, y, label: `Q${q} ${y}` });
+  }
+
+  const selId = 'incentive-quarter-sel';
+  const curIdx = quarters.findIndex(x => x.q === curQ && x.y === curY);
+
+  wrap.innerHTML = `
+    <div style="display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3) var(--space-3) 0;">
+      <label class="text-sm text-muted" for="${selId}">Quarter:</label>
+      <select id="${selId}" class="form-control" style="width:auto;min-width:120px;" onchange="renderIncentiveGrid()">
+        ${quarters.map((x, i) => `<option value="${x.q}:${x.y}" ${i === curIdx ? 'selected' : ''}>${x.label}</option>`).join('')}
+      </select>
+    </div>
+    <div id="incentive-grid-wrap"></div>`;
+
+  window._incentiveReps = reps;
+  renderIncentiveGrid();
+}
+
+function renderIncentiveGrid() {
+  const wrap = el('incentive-grid-wrap');
+  if (!wrap) return;
+
+  const sel = el('incentive-quarter-sel');
+  if (!sel) return;
+  const [qStr, yStr] = sel.value.split(':');
+  const quarter = parseInt(qStr, 10);
+  const year    = parseInt(yStr, 10);
+  const reps    = window._incentiveReps || [];
+
+  const COLS = [
+    { key: 'new_customers', label: 'New Cust', dflt: 5 },
+    { key: 'reactivations', label: 'Reactiv', dflt: 5 },
+    { key: 'coverage_pct',  label: 'Cover %', dflt: 90 },
+    { key: 'growth_pct',    label: 'Growth %', dflt: 5 },
+  ];
+
+  const headers = COLS.map(c => `<th class="tg-month">${c.label}</th>`).join('');
+
+  const rows = reps.map(rep => {
+    const t = _incentiveTargets.find(x => x.rep_id === rep.id && x.quarter === quarter && x.year === year) || {};
+    const cells = COLS.map(c => {
+      const val = t[c.key] !== undefined ? t[c.key] : c.dflt;
+      return `<td class="tg-cell itg-cell" data-rep="${rep.id}" data-col="${c.key}" data-quarter="${quarter}" data-year="${year}">
+        <div class="tg-cell__val">${val}</div>
+      </td>`;
+    }).join('');
+    return `<tr><th class="tg-rep">${escHtml(rep.name)}</th>${cells}</tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="tg-scroll">
+      <table class="tg-table">
+        <thead>
+          <tr>
+            <th class="tg-rep tg-rep--head">Rep</th>
+            ${headers}
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+
+  // Attach click handlers
+  wrap.querySelectorAll('.itg-cell').forEach(cell => {
+    cell.addEventListener('click', () => beginEditIncentiveCell(cell));
+  });
+}
+
+function beginEditIncentiveCell(cell) {
+  if (cell.querySelector('input')) return;
+  const cur = cell.querySelector('.tg-cell__val')?.textContent?.trim() || '';
+  const input = document.createElement('input');
+  input.type  = 'number';
+  input.value = cur;
+  input.min   = '0';
+  input.className = 'tg-cell__input';
+  cell.innerHTML  = '';
+  cell.appendChild(input);
+  input.focus();
+  input.select();
+
+  const save = async () => {
+    const val = parseInt(input.value, 10);
+    if (isNaN(val) || val < 0) { cell.innerHTML = `<div class="tg-cell__val">${cur}</div>`; return; }
+    cell.innerHTML = `<div class="tg-cell__val">${val}</div>`;
+
+    const repId   = parseInt(cell.dataset.rep,     10);
+    const col     = cell.dataset.col;
+    const quarter = parseInt(cell.dataset.quarter, 10);
+    const year    = parseInt(cell.dataset.year,    10);
+
+    // Optimistic update local cache
+    let existing = _incentiveTargets.find(x => x.rep_id === repId && x.quarter === quarter && x.year === year);
+    if (!existing) {
+      existing = { rep_id: repId, quarter, year, new_customers: 5, reactivations: 5, coverage_pct: 90, growth_pct: 5 };
+      _incentiveTargets.push(existing);
+    }
+    existing[col] = val;
+
+    const payload = { rep_id: repId, quarter, year, [col]: val };
+    const result = await api('POST', '/api/kpi/targets', payload);
+    if (!result || result.error) {
+      toast(result?.error || 'Failed to save KPI target.');
+      cell.innerHTML = `<div class="tg-cell__val">${cur}</div>`;
+    }
+  };
+
+  input.addEventListener('blur',  save);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { input.blur(); }
+    if (e.key === 'Escape') { cell.innerHTML = `<div class="tg-cell__val">${cur}</div>`; }
+  });
+}
+
+// ── Team KPI traffic light table ──────────────────────────────────
+
+async function loadKpiTeam() {
+  const wrap = el('kpi-team-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="skeleton-block" style="margin-top:var(--space-4);height:160px;"></div>';
+  const data = await api('GET', '/api/kpi/team');
+  if (!data || data.error || !Array.isArray(data.reps)) { wrap.innerHTML = ''; return; }
+  renderKpiTeamTable(data);
+}
+
+function renderKpiTeamTable(data) {
+  const wrap = el('kpi-team-wrap');
+  if (!wrap) return;
+
+  const { quarter_label, reps } = data;
+
+  const rows = reps.map(r => {
+    const a = r.actuals;
+    const t = r.targets;
+
+    const ncCls  = kpiStatusClass(a.new_customers.pct, 100);
+    const rxCls  = kpiStatusClass(a.reactivations.pct, 100);
+    const covCls = kpiStatusClass(a.coverage.pct, t.coverage_pct);
+    const wpCls  = a.weekly_plan.submitted ? 'green' : 'red';
+    const grPct  = a.growth.pct;
+    const grCls  = grPct === null ? 'grey' : grPct >= t.growth_pct ? 'green' : grPct >= 0 ? 'amber' : 'red';
+    const grText = grPct === null ? '—' : `${grPct >= 0 ? '+' : ''}${grPct}%`;
+
+    return `<tr>
+      <td class="kpi-team__rep">${escHtml(r.name)}</td>
+      <td><span class="kpi-dot kpi-dot--${ncCls}"></span>${a.new_customers.actual}/${t.new_customers}</td>
+      <td><span class="kpi-dot kpi-dot--${rxCls}"></span>${a.reactivations.actual}/${t.reactivations}</td>
+      <td><span class="kpi-dot kpi-dot--${covCls}"></span>${a.coverage.pct ?? 0}%</td>
+      <td><span class="kpi-dot kpi-dot--${wpCls}"></span>${a.weekly_plan.submitted ? 'Yes' : 'No'}</td>
+      <td><span class="kpi-dot kpi-dot--${grCls}"></span>${grText}</td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="section-label" style="margin-top:var(--space-4);">
+      Team KPI Status
+      <button class="btn btn--ghost btn--sm" style="margin-left:var(--space-3);" onclick="exportKpiCsv()">Export CSV</button>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden;">
+      <div class="kpi-team-header text-sm text-muted" style="padding:var(--space-2) var(--space-3);">${escHtml(quarter_label)}</div>
+      <div class="table-scroll">
+        <table class="kpi-team-table">
+          <thead>
+            <tr>
+              <th>Rep</th>
+              <th>New Cust</th>
+              <th>Reactiv</th>
+              <th>Coverage</th>
+              <th>Wkly Plan</th>
+              <th>Growth</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+async function exportKpiCsv() {
+  try {
+    const res = await fetch('/api/kpi/team/csv', { credentials: 'same-origin' });
+    if (!res.ok) { toast('CSV export failed.'); return; }
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'kpi-export.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    toast('CSV export failed.');
+  }
+}
+
 // ── Expose globals for inline onclick handlers ────────────────────────────────
 window.openUserModal      = openUserModal;
 window.resetPassword      = resetPassword;
@@ -2663,6 +3001,9 @@ window.closeImportModal   = closeImportModal;
 window.importFileSelected = importFileSelected;
 window.runImport          = runImport;
 window.resetImportModal   = resetImportModal;
+window.submitWeeklyPlan   = submitWeeklyPlan;
+window.renderIncentiveGrid = renderIncentiveGrid;
+window.exportKpiCsv       = exportKpiCsv;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 boot();

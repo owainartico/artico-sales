@@ -1767,3 +1767,90 @@ body {
 .import-stat--ok     { background: #d1fae5; color: #065f46; }
 .import-stat--warn   { background: #fef3c7; color: #92400e; }
 .import-stat--muted  { background: var(--color-bg); color: var(--color-muted); border: 1px solid var(--color-border); }
+
+/* ═══════════════════════════════════════════════════════════════
+   KPI Incentive Tracker
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Status dots ─────────────────────────────────────────────── */
+.kpi-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+.kpi-dot--green { background: #10B981; }
+.kpi-dot--amber { background: #F59E0B; }
+.kpi-dot--red   { background: #EF4444; }
+.kpi-dot--grey  { background: var(--color-border); }
+
+/* ── Rep KPI card ────────────────────────────────────────────── */
+.kpi-card { padding: var(--space-4); }
+
+.kpi-card__header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.kpi-card__title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--color-text);
+}
+
+.kpi-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.kpi-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+.kpi-row__label {
+  font-size: 0.85rem;
+  color: var(--color-muted);
+}
+.kpi-row__value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: right;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.kpi-row__bar {
+  grid-column: 2 / 4;
+  margin-top: 2px;
+}
+
+/* ── KPI team table ──────────────────────────────────────────── */
+.kpi-team-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.kpi-team-table th {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg);
+  color: var(--color-muted);
+  font-weight: 600;
+  font-size: 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+.kpi-team-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+.kpi-team-table tbody tr:last-child td { border-bottom: none; }
+.kpi-team__rep { font-weight: 600; }
