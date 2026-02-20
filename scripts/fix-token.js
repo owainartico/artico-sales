@@ -164,7 +164,7 @@ async function main() {
   } catch (err) {
     console.error('\nFatal error:', err.message);
   } finally {
-    await db.end?.();
+    await db.pool.end();
     process.exit(0);
   }
 }
