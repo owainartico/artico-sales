@@ -150,6 +150,38 @@ async function runMigrations() {
     console.error('[migrations] Failed to apply is_prospect migration:', err.message);
   }
 
+  // ── KPI incentive_targets + weekly_plans (Prompt 8) ─────────────────────────
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS incentive_targets (
+        id            SERIAL   PRIMARY KEY,
+        rep_id        INTEGER  NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        quarter       SMALLINT NOT NULL CHECK (quarter BETWEEN 1 AND 4),
+        year          SMALLINT NOT NULL CHECK (year >= 2020),
+        new_customers SMALLINT NOT NULL DEFAULT 5,
+        reactivations SMALLINT NOT NULL DEFAULT 5,
+        coverage_pct  SMALLINT NOT NULL DEFAULT 90,
+        growth_pct    SMALLINT NOT NULL DEFAULT 5,
+        set_by        INTEGER  REFERENCES users(id),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (rep_id, quarter, year)
+      );
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS weekly_plans (
+        id           SERIAL  PRIMARY KEY,
+        rep_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        week_start   DATE    NOT NULL,
+        submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (rep_id, week_start)
+      );
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_weekly_plans_rep_week ON weekly_plans(rep_id, week_start);`);
+    console.log('[migrations] incentive_targets + weekly_plans OK');
+  } catch (err) {
+    console.error('[migrations] Failed to apply KPI tables migration:', err.message);
+  }
+
   // ── Call Planner schema ───────────────────────────────────────────────────
   try {
     await pool.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS postcode VARCHAR(10);`);

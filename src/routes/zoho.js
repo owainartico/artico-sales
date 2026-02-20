@@ -484,6 +484,43 @@ router.post('/debug/run-planner-migration', requireRole('executive'), async (req
     results.push(`call_plan_items ERROR: ${err.message}`);
   }
 
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS incentive_targets (
+        id            SERIAL   PRIMARY KEY,
+        rep_id        INTEGER  NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        quarter       SMALLINT NOT NULL CHECK (quarter BETWEEN 1 AND 4),
+        year          SMALLINT NOT NULL CHECK (year >= 2020),
+        new_customers SMALLINT NOT NULL DEFAULT 5,
+        reactivations SMALLINT NOT NULL DEFAULT 5,
+        coverage_pct  SMALLINT NOT NULL DEFAULT 90,
+        growth_pct    SMALLINT NOT NULL DEFAULT 5,
+        set_by        INTEGER  REFERENCES users(id),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (rep_id, quarter, year)
+      );
+    `);
+    results.push('incentive_targets: OK');
+  } catch (err) {
+    results.push(`incentive_targets ERROR: ${err.message}`);
+  }
+
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS weekly_plans (
+        id           SERIAL  PRIMARY KEY,
+        rep_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        week_start   DATE    NOT NULL,
+        submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (rep_id, week_start)
+      );
+    `);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_weekly_plans_rep_week ON weekly_plans(rep_id, week_start);`);
+    results.push('weekly_plans: OK');
+  } catch (err) {
+    results.push(`weekly_plans ERROR: ${err.message}`);
+  }
+
   res.json({ ok: true, results });
 });
 
