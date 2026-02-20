@@ -10,7 +10,7 @@
 
 const express = require('express');
 const { makeZohoRequest } = require('../services/zoho');
-const { syncStores, fetchInvoices, fetchInvoicesWithTimeout, invalidateInvoiceCache, getInvoiceCacheStats, isSyncRecentEnough } = require('../services/sync');
+const { syncStores, fetchInvoices, fetchInvoicesWithTimeout, invalidateInvoiceCache, refreshInvoiceCacheInBackground, getInvoiceCacheStats, isSyncRecentEnough } = require('../services/sync');
 const { requireRole } = require('../middleware/auth');
 const db = require('../db');
 
@@ -272,6 +272,50 @@ router.get('/debug/invoice-cache', requireRole('executive'), (req, res) => {
   });
 });
 
+// ── GET /api/debug/token-status ───────────────────────────────────────────────
+// Shows Zoho token state from app_config (NOT zoho_tokens — that table doesn't
+// exist; the refresh token lives in app_config under key 'zoho_refresh_token').
+// Also shows invoice cache state and attempts a live Zoho ping. Executive only.
+
+router.get('/debug/token-status', requireRole('executive'), async (req, res) => {
+  const out = {};
+
+  // 1. Check app_config for persisted refresh token
+  try {
+    const { rows } = await db.query(
+      `SELECT key, LEFT(value, 20) AS value_preview, updated_at
+       FROM app_config WHERE key = 'zoho_refresh_token'`
+    );
+    out.refresh_token_in_db = rows.length > 0
+      ? { found: true, preview: rows[0].value_preview + '…', updated_at: rows[0].updated_at }
+      : { found: false, note: 'No refresh token in app_config — will use ZOHO_REFRESH_TOKEN env var' };
+  } catch (err) {
+    out.refresh_token_db_error = err.message;
+  }
+
+  // 2. Invoice cache state
+  out.invoice_cache = getInvoiceCacheStats();
+
+  // 3. Live Zoho ping
+  try {
+    const to   = new Date().toISOString().slice(0, 10);
+    const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const data = await makeZohoRequest('/invoices', {
+      date_start: from, date_end: to, status: 'paid', per_page: 1, page: 1,
+    });
+    out.zoho_ping = {
+      ok: true,
+      token_valid: true,
+      invoices_found: data.invoices?.length || 0,
+      sample_date: data.invoices?.[0]?.date || null,
+    };
+  } catch (err) {
+    out.zoho_ping = { ok: false, token_valid: false, error: err.message };
+  }
+
+  res.json(out);
+});
+
 // ── GET /api/debug/zoho-ping ──────────────────────────────────────────────────
 // Tests Zoho token by fetching 1 recent invoice. Executive only.
 
@@ -308,10 +352,12 @@ router.post('/debug/cache-refresh', requireRole('executive'), (req, res) => {
   const from = `${fromD.getFullYear()}-${pad(fromD.getMonth() + 1)}-01`;
   const to   = `${toD.getFullYear()}-${pad(toD.getMonth() + 1)}-${pad(toD.getDate())}`;
 
+  // Clear first (user-triggered explicit reload), then refill.
+  // Unlike the hourly scheduler we want a true forced reload here.
   invalidateInvoiceCache();
   console.log(`[cache-refresh] Cache cleared. Re-warming ${from} to ${to}…`);
 
-  fetchInvoices(from, to)
+  refreshInvoiceCacheInBackground(from, to)
     .then(inv => console.log(`[cache-refresh] Done — ${inv.length} invoices loaded`))
     .catch(err => console.error('[cache-refresh] Failed:', err.message));
 

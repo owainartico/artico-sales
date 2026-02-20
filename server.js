@@ -150,15 +150,28 @@ app.listen(PORT, async () => {
   const { startScheduler } = require('./src/services/sync');
   startScheduler();
 
-  // Schedule nightly alert engine at 02:00 AEST / AEDT
+  // Schedule nightly alert engine + prospect classification at 02:00 AEST / AEDT
   const cron = require('node-cron');
   const { runAlertEngine } = require('./src/services/alertEngine');
+  const { classifyProspects: _classifyProspects, promoteActiveProspects: _promoteActiveProspects, downgradeInactiveToProspect: _downgradeInactiveToProspect } = require('./src/services/grading');
   cron.schedule('0 2 * * *', async () => {
     console.log('[cron] Running nightly alert engine');
     try {
       await runAlertEngine();
     } catch (err) {
       console.error('[cron] Alert engine error:', err.message);
+    }
+
+    // Nightly prospect classification ensures stores that lapse out of the
+    // 24-month activity window get their P badge within a day, not just quarterly.
+    // Runs after the alert engine so the invoice cache is already warm.
+    console.log('[cron] Running nightly prospect classification');
+    try {
+      await _classifyProspects();
+      await _promoteActiveProspects();
+      await _downgradeInactiveToProspect();
+    } catch (err) {
+      console.error('[cron] Nightly prospect classification error:', err.message);
     }
   }, { timezone: 'Australia/Sydney' });
 

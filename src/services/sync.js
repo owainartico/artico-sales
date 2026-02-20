@@ -283,19 +283,71 @@ async function syncStores({ force = false } = {}) {
 // ── fetchInvoices(fromDate, toDate, extraParams?) ─────────────────────────────
 
 /**
+ * Internal: fetch invoices directly from Zoho without any cache interaction.
+ * Deduplicates sent + paid results. Used by fetchInvoices() and
+ * refreshInvoiceCacheInBackground() to share the same fetch logic.
+ */
+async function _fetchInvoicesFromZoho(fromDate, toDate, extraParams = {}) {
+  console.log(`[sync] fetchInvoices fetching from Zoho — ${fromDate} to ${toDate}`);
+  const baseParams = {
+    date_start: fromDate,
+    date_end: toDate,
+    ...extraParams,
+  };
+
+  // Zoho Books only accepts one status value per request
+  const [sent, paid] = await Promise.all([
+    fetchAllPages('/invoices', 'invoices', { ...baseParams, status: 'sent' }),
+    fetchAllPages('/invoices', 'invoices', { ...baseParams, status: 'paid' }),
+  ]);
+
+  // Deduplicate — a paid invoice might appear in both sets
+  const seen = new Set();
+  const all  = [];
+  for (const inv of [...sent, ...paid]) {
+    if (!seen.has(inv.invoice_id)) {
+      seen.add(inv.invoice_id);
+      all.push(inv);
+    }
+  }
+  return all;
+}
+
+// Track in-progress background refreshes to prevent stampedes
+const _backgroundRefreshing = new Set();
+
+/**
+ * Refresh the invoice cache for a date range WITHOUT clearing existing data first.
+ * The stale cache entry keeps serving dashboard requests during the ~60s Zoho fetch.
+ * Once the fetch completes the cache is atomically updated with fresh data.
+ *
+ * This avoids the "cache gap" that occurs when the cache is cleared before a
+ * background fetch, leaving dashboard requests with no data for up to 60 seconds.
+ */
+async function refreshInvoiceCacheInBackground(fromDate, toDate) {
+  const key = `${fromDate}::${toDate}`;
+  if (_backgroundRefreshing.has(key)) {
+    console.log(`[sync] Background refresh already in progress for ${key} — skipping`);
+    return;
+  }
+  _backgroundRefreshing.add(key);
+  try {
+    const all = await _fetchInvoicesFromZoho(fromDate, toDate);
+    _setCachedInvoices(fromDate, toDate, all);
+    console.log(`[sync] fetchInvoices cached — ${all.length} invoices`);
+    return all;
+  } finally {
+    _backgroundRefreshing.delete(key);
+  }
+}
+
+/**
  * Fetch invoices with status 'sent' or 'paid' within the given date range.
  * Returns raw invoice objects — not stored locally.
  *
  * Each invoice contains (at minimum):
  *   invoice_id, customer_id, salesperson_name, date, sub_total (ex-GST), total (inc-GST), line_items[]
  *   Use sub_total for all revenue calculations — it is the ex-GST amount.
- *
- * line_items contains: item_id, name, quantity, item_total (ex-GST per line)
- *   TODO: Confirm 'sku' field name on line items if SKU-based brand matching is needed.
- *
- * TODO: Verify that 'date_start'/'date_end' are the correct Zoho Books filter
- *       param names for invoices. If date filtering returns all invoices, try
- *       'from_date'/'to_date' instead.
  *
  * @param {string} fromDate    – 'YYYY-MM-DD'
  * @param {string} toDate      – 'YYYY-MM-DD'
@@ -312,28 +364,7 @@ async function fetchInvoices(fromDate, toDate, extraParams = {}) {
     }
   }
 
-  console.log(`[sync] fetchInvoices fetching from Zoho — ${fromDate} to ${toDate}`);
-  const baseParams = {
-    date_start: fromDate,
-    date_end: toDate,
-    ...extraParams,
-  };
-
-  // Zoho Books only accepts one status value per request
-  const [sent, paid] = await Promise.all([
-    fetchAllPages('/invoices', 'invoices', { ...baseParams, status: 'sent' }),
-    fetchAllPages('/invoices', 'invoices', { ...baseParams, status: 'paid' }),
-  ]);
-
-  // Deduplicate — a paid invoice might appear in both sets
-  const seen = new Set();
-  const all = [];
-  for (const inv of [...sent, ...paid]) {
-    if (!seen.has(inv.invoice_id)) {
-      seen.add(inv.invoice_id);
-      all.push(inv);
-    }
-  }
+  const all = await _fetchInvoicesFromZoho(fromDate, toDate, extraParams);
 
   if (useCache) {
     _setCachedInvoices(fromDate, toDate, all);
@@ -447,11 +478,14 @@ function startScheduler() {
       console.error('[scheduler] Scheduled store sync failed:', err.message);
     }
 
-    // Refresh 18m invoice cache each hour to keep dashboard data current
-    console.log('[scheduler] Refreshing invoice cache...');
-    invalidateInvoiceCache();
+    // Refresh 18m invoice cache each hour WITHOUT clearing first.
+    // Old data stays in cache and serves dashboard requests during the ~60s
+    // Zoho fetch. Cache is atomically updated once new data arrives.
+    // (Previously: invalidateInvoiceCache() + fetchInvoices() caused a ~60s
+    //  window where the cache was empty → dashboard timeouts → $0 revenue.)
+    console.log('[scheduler] Refreshing invoice cache (gap-free)...');
     const { fromDate, toDate } = getMonthWindow(18);
-    fetchInvoices(fromDate, toDate).catch((err) =>
+    refreshInvoiceCacheInBackground(fromDate, toDate).catch((err) =>
       console.error('[scheduler] Invoice cache refresh (18m) failed:', err.message)
     );
 
@@ -499,6 +533,7 @@ module.exports = {
   syncStores,
   fetchInvoices,
   fetchInvoicesWithTimeout,
+  refreshInvoiceCacheInBackground,
   fetchSalesOrders,
   fetchItemBrandMap,
   startScheduler,
