@@ -11,9 +11,8 @@
  *   invalidateCache(key?)                     → clear one key or all
  */
 
-const db             = require('../db');
-const { fetchInvoices } = require('./sync');
-const { BRANDS }     = require('../../config/brands');
+const db                              = require('../db');
+const { fetchInvoices, fetchItemBrandMap } = require('./sync');
 
 // ── In-memory cache ───────────────────────────────────────────────────────────
 
@@ -135,20 +134,26 @@ function byMonth(invoices, spName) {
   return out;
 }
 
-/** Sum invoice line_items for a brand slug across a set of invoices */
-function brandTotal(invoices, brand) {
-  let total = 0;
+/** Convert a brand display name to a URL-safe slug for DB lookups */
+function slugify(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+/**
+ * Sum invoice line item totals grouped by brand name.
+ * Uses an item_id → brand_name map fetched from Zoho item catalog.
+ * Returns { [brandName]: totalAmount }
+ */
+function buildBrandTotals(invoices, itemBrandMap) {
+  const totals = {};
   for (const inv of invoices) {
     for (const line of inv.line_items || []) {
-      const match = brand.zohoItemGroupId
-        ? line.item_id === brand.zohoItemGroupId
-        : brand.skuPrefixes.some(p =>
-            (line.sku || line.item_name || '').toUpperCase().startsWith(p)
-          );
-      if (match) total += Number(line.item_total || 0);
+      const brand = itemBrandMap.get(String(line.item_id || ''));
+      if (!brand) continue;
+      totals[brand] = (totals[brand] || 0) + Number(line.item_total || 0);
     }
   }
-  return total;
+  return totals;
 }
 
 /**
@@ -223,16 +228,17 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
     target: targetByM[m] || 0,
   }));
 
-  // Brand breakdown (current month only)
+  // Brand breakdown (current month only) — dynamic from item catalog
   const mInvoices = invoices.filter(i => i.salesperson_name === (spName || '') && i.date >= mFrom && i.date <= mTo);
-  const brandAmounts = BRANDS.map(b => ({ ...b, actual: brandTotal(mInvoices, b) }));
-  const brandTotal_ = brandAmounts.reduce((s, b) => s + b.actual, 0);
-  const brand_breakdown = brandAmounts
-    .map(b => ({
-      slug: b.slug,
-      name: b.name,
-      actual: b.actual,
-      pct_of_total: brandTotal_ > 0 ? Math.round((b.actual / brandTotal_) * 100) : 0,
+  const itemBrandMap = await fetchItemBrandMap().catch(() => new Map());
+  const brandTotalsMap = buildBrandTotals(mInvoices, itemBrandMap);
+  const totalBrandRev = Object.values(brandTotalsMap).reduce((s, v) => s + v, 0);
+  const brand_breakdown = Object.entries(brandTotalsMap)
+    .map(([name, actual]) => ({
+      slug: slugify(name),
+      name,
+      actual,
+      pct_of_total: totalBrandRev > 0 ? Math.round((actual / totalBrandRev) * 100) : 0,
     }))
     .sort((a, b) => b.actual - a.actual);
 
@@ -276,7 +282,7 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   const { from: prevFrom, to: prevTo } = monthBounds(prev);
 
   // ── Parallel fetches ──
-  const [repsResult, invoices, mTargets, ytdTargets, brandMTargets, brandPrevTargets, syncAt] = await Promise.all([
+  const [repsResult, invoices, mTargets, ytdTargets, brandMTargets, syncAt] = await Promise.all([
     db.query(`SELECT id, name, zoho_salesperson_id FROM users WHERE role='rep' AND active=TRUE ORDER BY name`),
     fetchInvoices(histFrom, mTo).catch(() => []),
     db.query(`SELECT rep_id, amount FROM revenue_targets WHERE month=$1`, [month]),
@@ -286,7 +292,6 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
       [yearStart.slice(0, 7), month]
     ),
     db.query(`SELECT brand_slug, amount FROM brand_targets WHERE month=$1`, [month]),
-    db.query(`SELECT brand_slug, amount FROM brand_targets WHERE month=$1`, [prev]),
     lastSyncAt(),
   ]);
 
@@ -324,20 +329,28 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   };
   ytd.percentage = ytd.target > 0 ? Math.round((ytd.actual / ytd.target) * 100) : null;
 
-  // Brand performance
+  // Brand performance — dynamic from item catalog
   const mInvoices   = invoices.filter(i => i.date >= mFrom    && i.date <= mTo);
   const prvInvoices = invoices.filter(i => i.date >= prevFrom  && i.date <= prevTo);
   const bTargetBySlug = {}; for (const r of brandMTargets.rows)   bTargetBySlug[r.brand_slug]  = Number(r.amount);
-  const bPrevBySlug   = {}; for (const r of brandPrevTargets.rows) bPrevBySlug[r.brand_slug]    = Number(r.amount);
 
-  const brand_performance = BRANDS.map(b => {
-    const actual      = brandTotal(mInvoices, b);
-    const prev_actual = brandTotal(prvInvoices, b);
-    const target      = bTargetBySlug[b.slug] || 0;
-    const trend       = prev_actual > 0 ? Math.round(((actual - prev_actual) / prev_actual) * 100) : null;
-    return { slug: b.slug, name: b.name, actual, target,
-             percentage: target > 0 ? Math.round((actual / target) * 100) : null, trend };
-  });
+  const itemBrandMap   = await fetchItemBrandMap().catch(() => new Map());
+  const mBrandTotals   = buildBrandTotals(mInvoices, itemBrandMap);
+  const prvBrandTotals = buildBrandTotals(prvInvoices, itemBrandMap);
+
+  // Union of brand names seen in current or previous month
+  const allBrandNames = new Set([...Object.keys(mBrandTotals), ...Object.keys(prvBrandTotals)]);
+  const brand_performance = [...allBrandNames]
+    .map(brandName => {
+      const slug        = slugify(brandName);
+      const actual      = mBrandTotals[brandName]   || 0;
+      const prev_actual = prvBrandTotals[brandName] || 0;
+      const target      = bTargetBySlug[slug]       || 0;
+      const trend       = prev_actual > 0 ? Math.round(((actual - prev_actual) / prev_actual) * 100) : null;
+      return { slug, name: brandName, actual, target,
+               percentage: target > 0 ? Math.round((actual / target) * 100) : null, trend };
+    })
+    .sort((a, b) => b.actual - a.actual);
 
   // New doors by rep (12-month approximation)
   const new_doors_by_rep = reps.map(rep => {

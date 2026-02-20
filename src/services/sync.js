@@ -97,6 +97,51 @@ function _markSyncDone(syncType) {
   _lastSyncAt[syncType] = Date.now();
 }
 
+// ── Item brand map cache ──────────────────────────────────────────────────────
+// Maps item_id → brand name. Fetched from /items endpoint, cached 24 hours.
+// Invoice line items have item_id but not brand; this map bridges the gap.
+
+let _itemBrandMapCache = null;
+let _itemBrandMapFetchedAt = 0;
+const ITEM_BRAND_MAP_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Returns a Map<item_id, brand_name> for all active Zoho items that have a brand.
+ * Cached for 24 hours. Falls back to empty Map on error.
+ */
+async function fetchItemBrandMap() {
+  if (_itemBrandMapCache && Date.now() - _itemBrandMapFetchedAt < ITEM_BRAND_MAP_TTL) {
+    return _itemBrandMapCache;
+  }
+
+  console.log('[sync] Fetching item brand map from Zoho...');
+  const map = new Map();
+  let page = 1;
+  let hasMore = true;
+
+  while (hasMore) {
+    const data = await makeZohoRequest('/items', {
+      filter_by: 'Status.Active',
+      per_page: 200,
+      page,
+    });
+    const items = data.items || [];
+    for (const item of items) {
+      const brand = (item.brand || '').trim();
+      if (item.item_id && brand) {
+        map.set(String(item.item_id), brand);
+      }
+    }
+    hasMore = data.page_context?.has_more_page === true;
+    page++;
+  }
+
+  _itemBrandMapCache = map;
+  _itemBrandMapFetchedAt = Date.now();
+  console.log(`[sync] Item brand map cached — ${map.size} items with brands`);
+  return map;
+}
+
 // ── Invoice in-memory cache ───────────────────────────────────────────────────
 // Keyed by "fromDate::toDate". Only used for unfiltered (full-range) fetches.
 // Avoids the ~40s cold Zoho fetch on every dashboard load.
@@ -369,6 +414,11 @@ function startScheduler() {
     fetchInvoices(fromDate, toDate).catch((err) =>
       console.error('[scheduler] Invoice cache pre-warm failed:', err.message)
     );
+
+    // Pre-warm item brand map
+    fetchItemBrandMap().catch((err) =>
+      console.error('[scheduler] Item brand map pre-warm failed:', err.message)
+    );
   }, 30_000);
 
   setInterval(async () => {
@@ -386,6 +436,12 @@ function startScheduler() {
     fetchInvoices(fromDate, toDate).catch((err) =>
       console.error('[scheduler] Invoice cache refresh failed:', err.message)
     );
+
+    // Refresh item brand map every hour too (brand assignments rarely change,
+    // but 24h TTL means it will use the cached version most of the time)
+    fetchItemBrandMap().catch((err) =>
+      console.error('[scheduler] Item brand map refresh failed:', err.message)
+    );
   }, SIXTY_MIN);
 
   console.log('[scheduler] Store sync scheduled — runs every 60 minutes');
@@ -395,6 +451,7 @@ module.exports = {
   syncStores,
   fetchInvoices,
   fetchSalesOrders,
+  fetchItemBrandMap,
   startScheduler,
   isSyncRecentEnough,
   invalidateInvoiceCache,
