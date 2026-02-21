@@ -175,7 +175,6 @@ router.post('/generate', requireAuth, async (req, res) => {
 
     // Assign clusters to days Mon–Fri by filling each day before advancing.
     // Keeping whole clusters together minimises driving within a day.
-    const MAX_PER_DAY = 8;
     const dayBuckets  = [[], [], [], [], []]; // index 0 = Mon (day_of_week 1)
     let dayIdx = 0;
     outer: for (const cluster of sortedClusters) {
