@@ -3058,14 +3058,22 @@ async function exportKpiCsv() {
 //  CALL PLANNER
 // ═══════════════════════════════════════════════════════════════════
 
-let _plannerWeek    = null;   // current ISO Monday string
-let _plannerData    = null;   // last fetched plan data
-let _plannerRepId   = null;   // rep being viewed (null = self)
-let _plannerRepName = null;   // name of rep being viewed
-let _planActionItemId = null; // item id open in actions sheet
-let _addPlanDay     = 1;      // selected day for manual add
+let _plannerWeek          = null;      // currently active ISO Monday (used by add-store etc.)
+let _plannerRepId         = null;      // rep being viewed (null = self)
+let _plannerRepName       = null;      // name of rep being viewed
+let _plannerQuarter       = null;      // 1–4
+let _plannerYear          = null;      // YYYY
+let _plannerWeekCache     = new Map(); // week → {submitted, days}
+let _plannerExpandedWeeks = new Set(); // weeks currently open in accordion
+let _planActionItemId     = null;      // item id in the actions sheet
+let _planActionWeek       = null;      // week of that item
+let _addPlanDay           = 1;         // day selected in add-store sheet
+let _moveDayFromWeek      = null;
+let _moveDayFromDay       = null;
+let _moveDayTargetDay     = 1;
+let _moveStoreTargetDay   = 1;
 
-// ── Date helpers ───────────────────────────────────────────────────
+// ── Date / quarter helpers ─────────────────────────────────────────
 
 function _isoMonday(dateStr) {
   const d = new Date(dateStr + 'T00:00:00Z');
@@ -3079,53 +3087,66 @@ function _currentPlannerWeek() {
   return _isoMonday(new Date().toISOString().slice(0, 10));
 }
 
-function _prevWeek(w) {
-  const d = new Date(w + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() - 7);
-  return d.toISOString().slice(0, 10);
+function _currentQuarter() {
+  const now = new Date();
+  return { quarter: Math.ceil((now.getMonth() + 1) / 3), year: now.getFullYear() };
 }
 
-function _nextWeek(w) {
-  const d = new Date(w + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + 7);
-  return d.toISOString().slice(0, 10);
+function _quarterWeeks(quarter, year) {
+  const monthStart = (quarter - 1) * 3;
+  const qEnd = new Date(Date.UTC(year, monthStart + 3, 0));
+  let d = new Date(Date.UTC(year, monthStart, 1));
+  const dow = d.getUTCDay();
+  if (dow !== 1) d.setUTCDate(d.getUTCDate() + (dow === 0 ? 1 : 8 - dow));
+  const weeks = [];
+  while (d <= qEnd) {
+    weeks.push(d.toISOString().slice(0, 10));
+    d = new Date(d); d.setUTCDate(d.getUTCDate() + 7);
+  }
+  return weeks;
 }
 
 function _fmtPlannerWeek(w) {
   const mon = new Date(w + 'T00:00:00Z');
   const fri = new Date(w + 'T00:00:00Z');
   fri.setUTCDate(fri.getUTCDate() + 4);
-  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const monStr = `${mon.getUTCDate()} ${monthNames[mon.getUTCMonth()]}`;
-  const friStr = `${fri.getUTCDate()} ${monthNames[fri.getUTCMonth()]} ${fri.getUTCFullYear()}`;
-  return `${monStr} – ${friStr}`;
+  const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${mon.getUTCDate()} ${M[mon.getUTCMonth()]} – ${fri.getUTCDate()} ${M[fri.getUTCMonth()]} ${fri.getUTCFullYear()}`;
+}
+
+function _fmtWeekShort(w) {
+  const mon = new Date(w + 'T00:00:00Z');
+  const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${mon.getUTCDate()} ${M[mon.getUTCMonth()]}`;
 }
 
 const _dayNames = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const _dayShort = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
-// ── Load planner page ──────────────────────────────────────────────
+// ── Load planner page (quarter accordion) ──────────────────────────
 
 async function loadPlanner() {
   const page = el('page-planner');
   const isManager = ['manager', 'executive'].includes(currentUser.role);
 
+  if (!_plannerQuarter) {
+    const cq = _currentQuarter();
+    _plannerQuarter = cq.quarter;
+    _plannerYear    = cq.year;
+  }
   if (!_plannerWeek) _plannerWeek = _currentPlannerWeek();
+  if (_plannerExpandedWeeks.size === 0) _plannerExpandedWeeks.add(_plannerWeek);
 
-  page.innerHTML = `
-    <div class="page-header">
-      <h1 class="page-title">Planner</h1>
-    </div>
-    <div class="skeleton-block" style="height:48px;margin-bottom:12px;"></div>
-    <div class="skeleton-block" style="height:180px;margin-bottom:12px;"></div>
-    <div class="skeleton-block" style="height:120px;"></div>`;
+  // Show skeleton only on first load (no accordion rendered yet)
+  if (!document.getElementById('planner-quarter-weeks')) {
+    page.innerHTML = `
+      <div class="page-header"><h1 class="page-title">Planner</h1></div>
+      <div class="skeleton-block" style="height:48px;margin-bottom:12px;"></div>
+      <div class="skeleton-block" style="height:300px;"></div>`;
+  }
 
-  // For managers, also show team summary then allow selecting a rep
-  const repId = _plannerRepId || null;
-  const url = repId
-    ? `/api/planner/week?week=${_plannerWeek}&rep_id=${repId}`
-    : `/api/planner/week?week=${_plannerWeek}`;
-  const data = await api('GET', url);
+  const repParam = _plannerRepId ? `&rep_id=${_plannerRepId}` : '';
+  const data = await api('GET', `/api/planner/quarter?quarter=${_plannerQuarter}&year=${_plannerYear}${repParam}`);
 
   if (!data || data.error) {
     page.innerHTML = `
@@ -3138,113 +3159,257 @@ async function loadPlanner() {
     return;
   }
 
-  _plannerData = data;
+  // Pre-load detail for all currently expanded weeks
+  await Promise.all([..._plannerExpandedWeeks].map(async (week) => {
+    if (!_plannerWeekCache.has(week)) {
+      const wd = await api('GET', `/api/planner/week?week=${week}${repParam}`);
+      if (wd && !wd.error) _plannerWeekCache.set(week, wd);
+    }
+  }));
+
   renderPlannerPage(page, data, isManager);
 }
 
-function renderPlannerPage(page, data, isManager) {
-  const { week, submitted, days } = data;
-  const totalItems = Object.values(days).reduce((s, arr) => s + arr.length, 0);
-  const confirmedCount = Object.values(days).reduce(
-    (s, arr) => s + arr.filter(i => i.status === 'confirmed' || i.status === 'completed').length, 0
-  );
+// ── Render quarter accordion ────────────────────────────────────────
+
+function renderPlannerPage(page, qData, isManager) {
+  const { quarter, year, weeks } = qData;
 
   let managerBar = '';
   if (isManager) {
-    const viewingLabel = _plannerRepId && _plannerRepName
-      ? `Viewing: ${_plannerRepName}`
-      : 'My plan';
-    const rightBtn = _plannerRepId
+    const lbl = _plannerRepId && _plannerRepName ? `Viewing: ${_plannerRepName}` : 'My plan';
+    const btn = _plannerRepId
       ? `<button class="btn btn--ghost btn--sm" onclick="resetPlannerToSelf()">My Plan</button>`
       : `<button class="btn btn--ghost btn--sm" onclick="openPlannerTeamView()">Team View</button>`;
-    managerBar = `
-      <div class="planner-manager-bar">
-        <span class="text-sm text-muted">${viewingLabel}</span>
-        ${rightBtn}
-      </div>`;
+    managerBar = `<div class="planner-manager-bar"><span class="text-sm text-muted">${lbl}</span>${btn}</div>`;
   }
-
-  const submitBtnHtml = submitted
-    ? `<div class="planner-submitted-badge">Plan submitted ✓</div>`
-    : `<button class="btn btn--accent btn--full planner-submit-btn" onclick="submitPlannerWeek()">
-        Submit Plan${totalItems > 0 ? ` (${totalItems} stores)` : ''}
-       </button>`;
 
   page.innerHTML = `
     ${managerBar}
-    <div class="planner-week-nav">
-      <button class="btn-icon-sm" onclick="shiftPlannerWeek(-1)">&#8592;</button>
-      <div class="planner-week-label">${_fmtPlannerWeek(week)}</div>
-      <button class="btn-icon-sm" onclick="shiftPlannerWeek(1)">&#8594;</button>
+    <div class="planner-quarter-nav">
+      <button class="btn-icon-sm" onclick="shiftPlannerQuarter(-1)">&#8592;</button>
+      <div class="planner-quarter-label">Q${quarter} ${year}</div>
+      <button class="btn-icon-sm" onclick="shiftPlannerQuarter(1)">&#8594;</button>
+      <button class="btn btn--ghost btn--sm" onclick="generatePlannerQuarter()" style="margin-left:auto;">&#9889; Generate Quarter</button>
     </div>
-
-    <div class="planner-actions-row">
-      <button class="btn btn--ghost btn--sm" onclick="generatePlannerWeek()">
-        ⚡ Generate Plan
-      </button>
-      <button class="btn btn--ghost btn--sm" onclick="openAddPlanStore()">
-        + Add Store
-      </button>
-    </div>
-
-    ${totalItems === 0 ? `
-      <div class="empty-state" style="padding:var(--space-6) var(--space-4);">
-        <div class="empty-state__title">No stores planned</div>
-        <div class="empty-state__desc">Tap "Generate Plan" to auto-fill overdue stores, or add stores manually.</div>
-      </div>` : ''}
-
-    <div id="planner-days">
-      ${[1,2,3,4,5].map(d => renderPlanDayCard(d, days[d] || [], submitted)).join('')}
-    </div>
-
-    <div style="padding:var(--space-4) 0 var(--space-2);">
-      ${submitBtnHtml}
+    <div id="planner-quarter-weeks">
+      ${weeks.map(w => renderQuarterWeekRow(w)).join('')}
     </div>`;
 }
 
-function renderPlanDayCard(dayNum, items, submitted) {
+// ── Render one week row (collapsed or expanded) ─────────────────────
+
+function renderQuarterWeekRow(w) {
+  const isExpanded = _plannerExpandedWeeks.has(w.week);
+  const isCurrent  = w.week === _currentPlannerWeek();
+
+  const parts = [];
+  if (w.total === 0) parts.push('Empty');
+  else {
+    parts.push(`${w.total} store${w.total !== 1 ? 's' : ''}`);
+    if (w.confirmed > 0) parts.push(`${w.confirmed} confirmed`);
+    if (w.completed > 0) parts.push(`${w.completed} done`);
+    if (w.suggested > 0 && w.total > 0) parts.push(`${w.suggested} to plan`);
+  }
+
+  const badges = [
+    isCurrent  ? `<span class="pqw-badge pqw-badge--current">This week</span>` : '',
+    w.submitted ? `<span class="pqw-badge pqw-badge--submitted">Submitted ✓</span>` : '',
+  ].filter(Boolean).join('');
+
+  const wd = _plannerWeekCache.get(w.week);
+  const detailHtml = isExpanded
+    ? `<div class="plan-quarter-week__detail">${wd ? renderWeekDetail(w.week, wd) : '<div class="planner-week-loading">Loading…</div>'}</div>`
+    : '';
+
+  return `
+    <div class="plan-quarter-week${isExpanded ? ' plan-quarter-week--expanded' : ''}${isCurrent ? ' plan-quarter-week--current' : ''}" id="plan-week-${w.week}">
+      <div class="plan-quarter-week__header" onclick="togglePlannerWeek('${w.week}')">
+        <div class="plan-quarter-week__info">
+          <span class="plan-quarter-week__label">${w.label}</span>
+          ${badges}
+        </div>
+        <div class="plan-quarter-week__right">
+          <span class="plan-quarter-week__summary">${parts.join(' · ')}</span>
+          <span class="plan-quarter-week__chevron">${isExpanded ? '▲' : '▼'}</span>
+        </div>
+      </div>
+      ${detailHtml}
+    </div>`;
+}
+
+// ── Render expanded week detail ─────────────────────────────────────
+
+function renderWeekDetail(week, wd) {
+  const { submitted, days } = wd;
+  const total = Object.values(days).reduce((s, a) => s + a.length, 0);
+  const dayCards = [1,2,3,4,5].map(d => renderPlanDayCard(d, days[d] || [], submitted, week)).join('');
+  const submitHtml = submitted
+    ? `<div class="planner-submitted-badge">Plan submitted ✓</div>`
+    : `<button class="btn btn--accent btn--full planner-submit-btn" onclick="submitPlannerWeek('${week}')">Submit Plan${total > 0 ? ` (${total} stores)` : ''}</button>`;
+  return `
+    <div class="planner-actions-row">
+      <button class="btn btn--ghost btn--sm" onclick="generatePlannerWeek('${week}')">&#9889; Week</button>
+      <button class="btn btn--ghost btn--sm" onclick="openAddPlanStore('${week}')">+ Store</button>
+    </div>
+    ${total === 0 ? `<div class="empty-state" style="padding:var(--space-3) var(--space-2);"><div class="empty-state__desc">No stores planned. Generate or add manually.</div></div>` : dayCards}
+    <div style="padding:var(--space-2) 0 var(--space-1);">${submitHtml}</div>`;
+}
+
+// ── Toggle week accordion ───────────────────────────────────────────
+
+async function togglePlannerWeek(week) {
+  if (_plannerExpandedWeeks.has(week)) {
+    _plannerExpandedWeeks.delete(week);
+    const container = document.getElementById(`plan-week-${week}`);
+    if (container) {
+      container.classList.remove('plan-quarter-week--expanded');
+      container.querySelector('.plan-quarter-week__detail')?.remove();
+      container.querySelector('.plan-quarter-week__chevron').textContent = '▼';
+    }
+    return;
+  }
+
+  _plannerExpandedWeeks.add(week);
+  _plannerWeek = week;
+
+  const container = document.getElementById(`plan-week-${week}`);
+  if (!container) return;
+  container.classList.add('plan-quarter-week--expanded');
+  container.querySelector('.plan-quarter-week__chevron').textContent = '▲';
+
+  let detail = container.querySelector('.plan-quarter-week__detail');
+  if (!detail) {
+    detail = document.createElement('div');
+    detail.className = 'plan-quarter-week__detail';
+    container.appendChild(detail);
+  }
+
+  if (_plannerWeekCache.has(week)) {
+    detail.innerHTML = renderWeekDetail(week, _plannerWeekCache.get(week));
+    return;
+  }
+
+  detail.innerHTML = '<div class="planner-week-loading">Loading…</div>';
+  const repParam = _plannerRepId ? `&rep_id=${_plannerRepId}` : '';
+  const wd = await api('GET', `/api/planner/week?week=${week}${repParam}`);
+  if (wd && !wd.error) {
+    _plannerWeekCache.set(week, wd);
+    detail.innerHTML = renderWeekDetail(week, wd);
+  } else {
+    detail.innerHTML = '<div class="text-muted text-sm" style="padding:12px;">Could not load week data.</div>';
+  }
+}
+window.togglePlannerWeek = togglePlannerWeek;
+
+// ── Quarter navigation ─────────────────────────────────────────────
+
+function shiftPlannerQuarter(dir) {
+  let q = _plannerQuarter + dir;
+  let y = _plannerYear;
+  if (q > 4) { q = 1; y++; }
+  if (q < 1) { q = 4; y--; }
+  _plannerQuarter = q;
+  _plannerYear    = y;
+  _plannerWeekCache.clear();
+  _plannerExpandedWeeks.clear();
+  const cw = _currentPlannerWeek();
+  if (_quarterWeeks(q, y).includes(cw)) _plannerExpandedWeeks.add(cw);
+  loadPlanner();
+}
+window.shiftPlannerQuarter = shiftPlannerQuarter;
+
+// ── Generate quarter ───────────────────────────────────────────────
+
+async function generatePlannerQuarter() {
+  const btn = document.querySelector('.planner-quarter-nav .btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+  const body = { scope: 'quarter', quarter: _plannerQuarter, year: _plannerYear };
+  if (_plannerRepId) body.rep_id = _plannerRepId;
+  const result = await api('POST', '/api/planner/generate', body);
+  if (btn) { btn.disabled = false; btn.textContent = '⚡ Generate Quarter'; }
+  if (!result || result.error) { toast(result?.error || 'Generate failed.'); return; }
+  toast(result.generated > 0
+    ? `Quarter planned — ${result.generated} stores across ${result.weeks_planned} week${result.weeks_planned !== 1 ? 's' : ''}.`
+    : (result.message || 'No stores to schedule.'));
+  _plannerWeekCache.clear();
+  loadPlanner();
+}
+window.generatePlannerQuarter = generatePlannerQuarter;
+
+// ── Generate single week ───────────────────────────────────────────
+
+async function generatePlannerWeek(week) {
+  if (week) _plannerWeek = week;
+  const body = { week: _plannerWeek };
+  if (_plannerRepId) body.rep_id = _plannerRepId;
+  const result = await api('POST', '/api/planner/generate', body);
+  if (!result || result.error) { toast(result?.error || 'Generate failed.'); return; }
+  toast(result.generated > 0
+    ? `Generated ${result.generated} stores.`
+    : (result.message || 'No overdue stores found.'));
+  _plannerWeekCache.delete(_plannerWeek);
+  loadPlanner();
+}
+window.generatePlannerWeek = generatePlannerWeek;
+
+// ── Submit plan for a week ─────────────────────────────────────────
+
+async function submitPlannerWeek(week) {
+  if (week) _plannerWeek = week;
+  const body = { week: _plannerWeek };
+  if (_plannerRepId) body.rep_id = _plannerRepId;
+  const result = await api('POST', '/api/planner/submit', body);
+  if (!result || result.error) { toast(result?.error || 'Submit failed.'); return; }
+  toast('Plan submitted.');
+  _plannerWeekCache.delete(_plannerWeek);
+  loadPlanner();
+}
+window.submitPlannerWeek = submitPlannerWeek;
+
+// ── Render day card ────────────────────────────────────────────────
+
+function renderPlanDayCard(dayNum, items, submitted, week) {
   if (items.length === 0) return '';
+  const moveDayBtn = !submitted
+    ? `<button class="btn btn--ghost btn--xs" onclick="openMoveDayModal('${week}',${dayNum})">Move Day</button>`
+    : '';
   const itemsHtml = items.map((item, idx) =>
-    renderPlanItem(item, dayNum, idx, items.length, submitted)
+    renderPlanItem(item, dayNum, idx, items.length, submitted, week)
   ).join('');
   return `
     <div class="plan-day-card">
       <div class="plan-day-header">
         <span class="plan-day-name">${_dayNames[dayNum]}</span>
         <span class="plan-day-count">${items.length} store${items.length !== 1 ? 's' : ''}</span>
+        ${moveDayBtn}
       </div>
       ${itemsHtml}
     </div>`;
 }
 
-function renderPlanItem(item, dayNum, idx, total, submitted) {
+// ── Render plan item row ───────────────────────────────────────────
+
+function renderPlanItem(item, dayNum, idx, total, submitted, week) {
   const gradeHtml = item.grade
     ? `<span class="grade-badge grade-badge--${item.grade}">${item.grade}</span>`
     : `<span class="grade-badge grade-badge--P">P</span>`;
-
   const meta = [item.state, item.postcode].filter(Boolean).join(' ');
   const overdue = item.days_since_visit != null ? `${item.days_since_visit}d` : '';
   const timeHtml = item.confirmed_time
-    ? `<span class="plan-item__time">⏰ ${item.confirmed_time}</span>`
-    : '';
-
+    ? `<span class="plan-item__time">⏰ ${item.confirmed_time}</span>` : '';
   const statusClass = item.status === 'confirmed' ? 'plan-item--confirmed'
     : item.status === 'completed' ? 'plan-item--completed'
-    : item.status === 'skipped'   ? 'plan-item--skipped'
-    : '';
-
+    : item.status === 'skipped'   ? 'plan-item--skipped' : '';
   const moveHtml = !submitted ? `
     <div class="plan-item__move">
-      ${idx > 0          ? `<button class="plan-item__move-btn" onclick="movePlanItemUp(${item.id})" title="Move up">↑</button>` : '<span></span>'}
-      ${idx < total - 1  ? `<button class="plan-item__move-btn" onclick="movePlanItemDown(${item.id})" title="Move down">↓</button>` : '<span></span>'}
+      ${idx > 0         ? `<button class="plan-item__move-btn" onclick="movePlanItemUp(${item.id})" title="Move up">↑</button>` : '<span></span>'}
+      ${idx < total - 1 ? `<button class="plan-item__move-btn" onclick="movePlanItemDown(${item.id})" title="Move down">↓</button>` : '<span></span>'}
     </div>` : '';
-
   const actionsBtn = !submitted
-    ? `<button class="plan-item__actions-btn" onclick="openPlanActions(${item.id})" title="Actions">⋮</button>`
-    : '';
-
+    ? `<button class="plan-item__actions-btn" onclick="openPlanActions(${item.id})" title="Actions">⋮</button>` : '';
   return `
-    <div class="plan-item ${statusClass}" data-plan-id="${item.id}" data-day="${dayNum}">
+    <div class="plan-item ${statusClass}" data-plan-id="${item.id}" data-day="${dayNum}" data-week="${week}">
       ${gradeHtml}
       <div class="plan-item__info">
         <div class="plan-item__name">${item.store_name}</div>
@@ -3255,73 +3420,23 @@ function renderPlanItem(item, dayNum, idx, total, submitted) {
     </div>`;
 }
 
-// ── Week navigation ────────────────────────────────────────────────
-
-function shiftPlannerWeek(dir) {
-  _plannerWeek = dir < 0 ? _prevWeek(_plannerWeek) : _nextWeek(_plannerWeek);
-  loadPlanner();
-}
-window.shiftPlannerWeek = shiftPlannerWeek;
-
-// ── Generate plan ──────────────────────────────────────────────────
-
-async function generatePlannerWeek() {
-  const btn = document.querySelector('.planner-actions-row .btn:first-child');
-  if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
-
-  const body = { week: _plannerWeek };
-  if (_plannerRepId) body.rep_id = _plannerRepId;
-
-  const result = await api('POST', '/api/planner/generate', body);
-
-  if (!result || result.error) {
-    toast(result?.error || 'Generate failed.');
-    if (btn) { btn.disabled = false; btn.textContent = '⚡ Generate Plan'; }
-    return;
-  }
-
-  if (result.generated === 0) {
-    toast(result.message || 'No overdue stores found.');
-  } else {
-    toast(`Plan generated — ${result.generated} stores across 5 days.`);
-  }
-  loadPlanner();
-}
-window.generatePlannerWeek = generatePlannerWeek;
-
-// ── Submit plan ────────────────────────────────────────────────────
-
-async function submitPlannerWeek() {
-  const body = { week: _plannerWeek };
-  if (_plannerRepId) body.rep_id = _plannerRepId;
-
-  const result = await api('POST', '/api/planner/submit', body);
-  if (!result || result.error) {
-    toast(result?.error || 'Submit failed.');
-    return;
-  }
-  toast('Plan submitted.');
-  loadPlanner();
-}
-window.submitPlannerWeek = submitPlannerWeek;
-
 // ── Move up / down within a day ────────────────────────────────────
 
 async function movePlanItemUp(id) {
   const item = document.querySelector(`[data-plan-id="${id}"]`);
   if (!item) return;
+  const week   = item.dataset.week;
   const dayNum = parseInt(item.dataset.day);
-  const siblings = [...document.querySelectorAll(`[data-day="${dayNum}"]`)];
+  const siblings = [...document.querySelectorAll(`[data-day="${dayNum}"]`)]
+    .filter(node => node.closest(`#plan-week-${week}`));
   const idx = siblings.indexOf(item);
   if (idx <= 0) return;
-  const above = siblings[idx - 1];
-  const aboveId = parseInt(above.dataset.planId);
-
-  // Swap positions: current gets position idx, above gets position idx+1
+  const aboveId = parseInt(siblings[idx - 1].dataset.planId);
   await Promise.all([
     api('PATCH', `/api/planner/items/${id}`,      { position: idx }),
     api('PATCH', `/api/planner/items/${aboveId}`, { position: idx + 1 }),
   ]);
+  _plannerWeekCache.delete(week);
   loadPlanner();
 }
 window.movePlanItemUp = movePlanItemUp;
@@ -3329,17 +3444,18 @@ window.movePlanItemUp = movePlanItemUp;
 async function movePlanItemDown(id) {
   const item = document.querySelector(`[data-plan-id="${id}"]`);
   if (!item) return;
+  const week   = item.dataset.week;
   const dayNum = parseInt(item.dataset.day);
-  const siblings = [...document.querySelectorAll(`[data-day="${dayNum}"]`)];
+  const siblings = [...document.querySelectorAll(`[data-day="${dayNum}"]`)]
+    .filter(node => node.closest(`#plan-week-${week}`));
   const idx = siblings.indexOf(item);
   if (idx >= siblings.length - 1) return;
-  const below = siblings[idx + 1];
-  const belowId = parseInt(below.dataset.planId);
-
+  const belowId = parseInt(siblings[idx + 1].dataset.planId);
   await Promise.all([
     api('PATCH', `/api/planner/items/${id}`,      { position: idx + 2 }),
     api('PATCH', `/api/planner/items/${belowId}`, { position: idx + 1 }),
   ]);
+  _plannerWeekCache.delete(week);
   loadPlanner();
 }
 window.movePlanItemDown = movePlanItemDown;
@@ -3349,11 +3465,26 @@ window.movePlanItemDown = movePlanItemDown;
 function openPlanActions(itemId) {
   _planActionItemId = itemId;
 
-  // Find item data from rendered DOM
   const itemEl = document.querySelector(`[data-plan-id="${itemId}"]`);
   const name = itemEl?.querySelector('.plan-item__name')?.textContent || 'Store';
+  _planActionWeek = itemEl?.dataset.week || _plannerWeek;
+
   el('plan-actions-title').textContent = name;
   el('plan-confirm-time').value = '';
+
+  // Populate move-to-week selector
+  const weeks = _plannerQuarter ? _quarterWeeks(_plannerQuarter, _plannerYear) : [];
+  const sel = el('plan-move-week-select');
+  sel.innerHTML = weeks.map(w => {
+    const label = _fmtWeekShort(w);
+    return `<option value="${w}"${w === _planActionWeek ? ' selected' : ''}>${label}</option>`;
+  }).join('');
+
+  // Reset day selector
+  _moveStoreTargetDay = 1;
+  document.querySelectorAll('.move-store-day-btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.day) === 1)
+  );
 
   el('modal-plan-actions').classList.remove('hidden');
 }
@@ -3362,6 +3493,7 @@ window.openPlanActions = openPlanActions;
 function closePlanActions() {
   el('modal-plan-actions').classList.add('hidden');
   _planActionItemId = null;
+  _planActionWeek   = null;
 }
 
 el('plan-actions-close').addEventListener('click', closePlanActions);
@@ -3375,6 +3507,7 @@ el('plan-confirm-btn').addEventListener('click', async () => {
     confirmed_time: time,
   });
   if (!result || result.error) { toast(result?.error || 'Update failed.'); return; }
+  _plannerWeekCache.delete(_planActionWeek);
   closePlanActions();
   loadPlanner();
 });
@@ -3382,6 +3515,7 @@ el('plan-confirm-btn').addEventListener('click', async () => {
 el('plan-remove-btn').addEventListener('click', async () => {
   const result = await api('DELETE', `/api/planner/items/${_planActionItemId}`);
   if (!result || result.error) { toast(result?.error || 'Remove failed.'); return; }
+  _plannerWeekCache.delete(_planActionWeek);
   closePlanActions();
   loadPlanner();
 });
@@ -3389,6 +3523,7 @@ el('plan-remove-btn').addEventListener('click', async () => {
 async function setPlanItemStatus(status) {
   const result = await api('PATCH', `/api/planner/items/${_planActionItemId}`, { status });
   if (!result || result.error) { toast(result?.error || 'Update failed.'); return; }
+  _plannerWeekCache.delete(_planActionWeek);
   closePlanActions();
   loadPlanner();
 }
@@ -3397,16 +3532,103 @@ window.setPlanItemStatus = setPlanItemStatus;
 async function movePlanItemToDay(day) {
   const result = await api('PATCH', `/api/planner/items/${_planActionItemId}`, { day_of_week: day });
   if (!result || result.error) { toast(result?.error || 'Move failed.'); return; }
+  _plannerWeekCache.delete(_planActionWeek);
   closePlanActions();
   loadPlanner();
 }
 window.movePlanItemToDay = movePlanItemToDay;
 
+function selectMoveStoreDay(day) {
+  _moveStoreTargetDay = day;
+  document.querySelectorAll('.move-store-day-btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.day) === day)
+  );
+}
+window.selectMoveStoreDay = selectMoveStoreDay;
+
+async function confirmMoveStoreToWeek() {
+  const targetWeek = el('plan-move-week-select').value;
+  if (!targetWeek) return;
+  const result = await api('PATCH', `/api/planner/items/${_planActionItemId}`, {
+    planned_week: targetWeek,
+    day_of_week:  _moveStoreTargetDay,
+  });
+  if (!result || result.error) { toast(result?.error || 'Move failed.'); return; }
+  _plannerWeekCache.delete(_planActionWeek);
+  _plannerWeekCache.delete(targetWeek);
+  closePlanActions();
+  loadPlanner();
+}
+window.confirmMoveStoreToWeek = confirmMoveStoreToWeek;
+
+// ── Move Day modal ─────────────────────────────────────────────────
+
+function openMoveDayModal(week, day) {
+  _moveDayFromWeek = week;
+  _moveDayFromDay  = parseInt(day);
+  const DAY_NAMES  = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+
+  el('move-day-title').textContent = `Move ${DAY_NAMES[_moveDayFromDay] || 'Day'} stores`;
+
+  // Populate week selector (exclude source week)
+  const weeks = _plannerQuarter ? _quarterWeeks(_plannerQuarter, _plannerYear) : [];
+  const sel = el('move-day-week-select');
+  sel.innerHTML = weeks.map(w => {
+    const label = _fmtWeekShort(w);
+    return `<option value="${w}"${w === week ? ' selected' : ''}>${label}</option>`;
+  }).join('');
+
+  // Reset target day
+  _moveDayTargetDay = 1;
+  document.querySelectorAll('.move-day-btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.day) === 1)
+  );
+
+  el('modal-move-day').classList.remove('hidden');
+}
+window.openMoveDayModal = openMoveDayModal;
+
+function closeMoveDayModal() {
+  el('modal-move-day').classList.add('hidden');
+  _moveDayFromWeek = null;
+  _moveDayFromDay  = null;
+}
+
+el('move-day-close').addEventListener('click', closeMoveDayModal);
+el('move-day-backdrop').addEventListener('click', closeMoveDayModal);
+
+function selectMoveDayTarget(day) {
+  _moveDayTargetDay = day;
+  document.querySelectorAll('.move-day-btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.day) === day)
+  );
+}
+window.selectMoveDayTarget = selectMoveDayTarget;
+
+el('move-day-confirm-btn').addEventListener('click', async () => {
+  const targetWeek = el('move-day-week-select').value;
+  if (!targetWeek || !_moveDayFromWeek) return;
+  const result = await api('POST', '/api/planner/move-day', {
+    from_week:   _moveDayFromWeek,
+    from_day:    _moveDayFromDay,
+    to_week:     targetWeek,
+    to_day:      _moveDayTargetDay,
+    rep_id:      _plannerRepId || undefined,
+  });
+  if (!result || result.error) { toast(result?.error || 'Move failed.'); return; }
+  _plannerWeekCache.delete(_moveDayFromWeek);
+  _plannerWeekCache.delete(targetWeek);
+  closeMoveDayModal();
+  toast(`Moved ${result.moved ?? ''} stores.`);
+  loadPlanner();
+});
+
 // ── Add store manually ─────────────────────────────────────────────
 
 let _addPlanStoreSearchTimer = null;
 
-function openAddPlanStore() {
+function openAddPlanStore(week) {
+  if (week) _plannerWeek = week;
   _addPlanDay = 1;
   document.querySelectorAll('.add-day-btn').forEach(b =>
     b.classList.toggle('active', parseInt(b.dataset.day) === 1)
@@ -3480,6 +3702,7 @@ async function addStoreToPlan(storeId) {
     toast(result?.error || 'Failed to add store.');
     return;
   }
+  _plannerWeekCache.delete(_plannerWeek);
   closeAddPlanStore();
   toast('Store added to plan.');
   loadPlanner();
@@ -3489,35 +3712,40 @@ window.addStoreToPlan = addStoreToPlan;
 // ── Manager team view ──────────────────────────────────────────────
 
 async function openPlannerTeamView() {
+  const { quarter, year } = _currentQuarter();
+  const teamWeek = _plannerWeek || _quarterWeeks(quarter, year)[0];
   const page = el('page-planner');
   page.innerHTML = `
     <div class="page-header">
       <h1 class="page-title">Team Plans</h1>
     </div>
-    <div class="planner-week-nav">
+    <div class="planner-quarter-nav">
       <button class="btn-icon-sm" onclick="shiftPlannerTeamWeek(-1)">&#8592;</button>
-      <div class="planner-week-label" id="planner-team-week-label">${_fmtPlannerWeek(_plannerWeek)}</div>
+      <div class="planner-week-label" id="planner-team-week-label">${_fmtPlannerWeek(teamWeek)}</div>
       <button class="btn-icon-sm" onclick="shiftPlannerTeamWeek(1)">&#8594;</button>
     </div>
     <div id="planner-team-wrap">
       <div class="skeleton-block" style="height:160px;margin-top:12px;"></div>
     </div>`;
 
-  loadPlannerTeamData();
+  loadPlannerTeamData(teamWeek);
 }
 window.openPlannerTeamView = openPlannerTeamView;
 
 function shiftPlannerTeamWeek(dir) {
-  _plannerWeek = dir < 0 ? _prevWeek(_plannerWeek) : _nextWeek(_plannerWeek);
-  el('planner-team-week-label').textContent = _fmtPlannerWeek(_plannerWeek);
-  loadPlannerTeamData();
+  const labelEl = el('planner-team-week-label');
+  const curWeek = labelEl?._week || _plannerWeek || _quarterWeeks(_plannerQuarter || _currentQuarter().quarter, _plannerYear || _currentQuarter().year)[0];
+  const nextWeek = dir < 0 ? _prevWeek(curWeek) : _nextWeek(curWeek);
+  if (labelEl) { labelEl.textContent = _fmtPlannerWeek(nextWeek); labelEl._week = nextWeek; }
+  loadPlannerTeamData(nextWeek);
 }
 window.shiftPlannerTeamWeek = shiftPlannerTeamWeek;
 
-async function loadPlannerTeamData() {
+async function loadPlannerTeamData(week) {
   const wrap = el('planner-team-wrap');
   if (!wrap) return;
-  const data = await api('GET', `/api/planner/team?week=${_plannerWeek}`);
+  const w = week || _plannerWeek || _quarterWeeks(_plannerQuarter || _currentQuarter().quarter, _plannerYear || _currentQuarter().year)[0];
+  const data = await api('GET', `/api/planner/team?week=${w}`);
   if (!data || data.error || !data.reps) {
     wrap.innerHTML = '<div class="empty-state__desc">Could not load team plans.</div>';
     return;
@@ -3567,6 +3795,8 @@ function renderPlannerTeamTable(wrap, data) {
 async function viewRepPlan(repId, repName) {
   _plannerRepId   = repId;
   _plannerRepName = repName || 'Rep';
+  _plannerWeekCache.clear();
+  _plannerExpandedWeeks.clear();
   loadPlanner();
 }
 window.viewRepPlan = viewRepPlan;
@@ -3574,6 +3804,8 @@ window.viewRepPlan = viewRepPlan;
 function resetPlannerToSelf() {
   _plannerRepId   = null;
   _plannerRepName = null;
+  _plannerWeekCache.clear();
+  _plannerExpandedWeeks.clear();
   loadPlanner();
 }
 window.resetPlannerToSelf = resetPlannerToSelf;
@@ -3597,22 +3829,28 @@ window.renderIncentiveGrid = renderIncentiveGrid;
 window.exportKpiCsv        = exportKpiCsv;
 window.runGrading          = runGrading;
 window.refreshInvoiceCache = refreshInvoiceCache;
-window.openAddPlanStore    = openAddPlanStore;
-window.closeAddPlanStore   = closeAddPlanStore;
-window.selectAddPlanDay    = selectAddPlanDay;
-window.addStoreToPlan      = addStoreToPlan;
-window.openPlanActions     = openPlanActions;
-window.setPlanItemStatus   = setPlanItemStatus;
-window.movePlanItemToDay   = movePlanItemToDay;
-window.movePlanItemUp      = movePlanItemUp;
-window.movePlanItemDown    = movePlanItemDown;
-window.generatePlannerWeek = generatePlannerWeek;
-window.submitPlannerWeek   = submitPlannerWeek;
-window.shiftPlannerWeek    = shiftPlannerWeek;
-window.openPlannerTeamView = openPlannerTeamView;
-window.shiftPlannerTeamWeek = shiftPlannerTeamWeek;
-window.viewRepPlan         = viewRepPlan;
-window.resetPlannerToSelf  = resetPlannerToSelf;
+window.openAddPlanStore       = openAddPlanStore;
+window.closeAddPlanStore      = closeAddPlanStore;
+window.selectAddPlanDay       = selectAddPlanDay;
+window.addStoreToPlan         = addStoreToPlan;
+window.openPlanActions        = openPlanActions;
+window.setPlanItemStatus      = setPlanItemStatus;
+window.movePlanItemToDay      = movePlanItemToDay;
+window.movePlanItemUp         = movePlanItemUp;
+window.movePlanItemDown       = movePlanItemDown;
+window.selectMoveStoreDay     = selectMoveStoreDay;
+window.confirmMoveStoreToWeek = confirmMoveStoreToWeek;
+window.openMoveDayModal       = openMoveDayModal;
+window.selectMoveDayTarget    = selectMoveDayTarget;
+window.generatePlannerWeek    = generatePlannerWeek;
+window.generatePlannerQuarter = generatePlannerQuarter;
+window.submitPlannerWeek      = submitPlannerWeek;
+window.shiftPlannerQuarter    = shiftPlannerQuarter;
+window.togglePlannerWeek      = togglePlannerWeek;
+window.openPlannerTeamView    = openPlannerTeamView;
+window.shiftPlannerTeamWeek   = shiftPlannerTeamWeek;
+window.viewRepPlan            = viewRepPlan;
+window.resetPlannerToSelf     = resetPlannerToSelf;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 boot();

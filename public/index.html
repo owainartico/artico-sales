@@ -431,9 +431,9 @@
             <button class="btn btn--accent" id="plan-confirm-btn">Confirm</button>
           </div>
         </div>
-        <!-- Move to day -->
+        <!-- Move to day (same week) -->
         <div>
-          <div class="form-label" style="margin-bottom:4px;">Move to day</div>
+          <div class="form-label" style="margin-bottom:4px;">Move to day (this week)</div>
           <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;">
             <button class="btn btn--ghost btn--sm" onclick="movePlanItemToDay(1)">Mon</button>
             <button class="btn btn--ghost btn--sm" onclick="movePlanItemToDay(2)">Tue</button>
@@ -442,8 +442,21 @@
             <button class="btn btn--ghost btn--sm" onclick="movePlanItemToDay(5)">Fri</button>
           </div>
         </div>
+        <!-- Move to different week -->
+        <div style="border-top:1px solid var(--color-border);padding-top:var(--space-3);">
+          <div class="form-label" style="margin-bottom:4px;">Move to a different week</div>
+          <select id="plan-move-week-select" class="form-input" style="margin-bottom:var(--space-2);"></select>
+          <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;margin-bottom:var(--space-2);">
+            <button class="btn btn--ghost btn--sm move-store-day-btn active" data-day="1" onclick="selectMoveStoreDay(1)">Mon</button>
+            <button class="btn btn--ghost btn--sm move-store-day-btn"        data-day="2" onclick="selectMoveStoreDay(2)">Tue</button>
+            <button class="btn btn--ghost btn--sm move-store-day-btn"        data-day="3" onclick="selectMoveStoreDay(3)">Wed</button>
+            <button class="btn btn--ghost btn--sm move-store-day-btn"        data-day="4" onclick="selectMoveStoreDay(4)">Thu</button>
+            <button class="btn btn--ghost btn--sm move-store-day-btn"        data-day="5" onclick="selectMoveStoreDay(5)">Fri</button>
+          </div>
+          <button class="btn btn--ghost btn--full" onclick="confirmMoveStoreToWeek()">Move to selected week / day</button>
+        </div>
         <!-- Status actions -->
-        <div style="display:flex;gap:var(--space-2);">
+        <div style="display:flex;gap:var(--space-2);border-top:1px solid var(--color-border);padding-top:var(--space-3);">
           <button class="btn btn--ghost btn--sm" id="plan-complete-btn" onclick="setPlanItemStatus('completed')" style="flex:1;">Mark Done</button>
           <button class="btn btn--ghost btn--sm" id="plan-skip-btn"     onclick="setPlanItemStatus('skipped')"   style="flex:1;">Skip</button>
         </div>
@@ -477,6 +490,36 @@
       </div>
     </div>
     <div id="add-plan-store-list" class="store-pick-list"></div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Move Day Sheet
+  ══════════════════════════════════════════════════════════════ -->
+  <div id="modal-move-day" class="modal hidden">
+    <div class="modal__backdrop" id="move-day-backdrop"></div>
+    <div class="modal__sheet">
+      <div class="modal__header">
+        <h2 class="modal__title" id="move-day-title">Move Day</h2>
+        <button class="modal__close" id="move-day-close">&times;</button>
+      </div>
+      <div class="modal__body" style="display:flex;flex-direction:column;gap:var(--space-3);">
+        <div>
+          <div class="form-label" style="margin-bottom:4px;">Move to week</div>
+          <select id="move-day-week-select" class="form-input"></select>
+        </div>
+        <div>
+          <div class="form-label" style="margin-bottom:4px;">Move to day</div>
+          <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;">
+            <button class="btn btn--ghost btn--sm move-day-btn active" data-day="1" onclick="selectMoveDayTarget(1)">Mon</button>
+            <button class="btn btn--ghost btn--sm move-day-btn"        data-day="2" onclick="selectMoveDayTarget(2)">Tue</button>
+            <button class="btn btn--ghost btn--sm move-day-btn"        data-day="3" onclick="selectMoveDayTarget(3)">Wed</button>
+            <button class="btn btn--ghost btn--sm move-day-btn"        data-day="4" onclick="selectMoveDayTarget(4)">Thu</button>
+            <button class="btn btn--ghost btn--sm move-day-btn"        data-day="5" onclick="selectMoveDayTarget(5)">Fri</button>
+          </div>
+        </div>
+        <button class="btn btn--accent btn--full" id="move-day-confirm-btn">Move all stores</button>
+      </div>
+    </div>
   </div>
 
   <!-- Toast notification -->

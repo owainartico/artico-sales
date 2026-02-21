@@ -34,6 +34,34 @@ function currentWeek() {
   return isoMonday(new Date().toISOString().slice(0, 10));
 }
 
+function currentQuarter() {
+  const now = new Date();
+  return { quarter: Math.ceil((now.getMonth() + 1) / 3), year: now.getFullYear() };
+}
+
+/** Returns array of ISO Monday strings for every week whose Monday falls in the given quarter */
+function quarterWeeks(quarter, year) {
+  const monthStart = (quarter - 1) * 3;
+  const qEnd = new Date(Date.UTC(year, monthStart + 3, 0));
+  let d = new Date(Date.UTC(year, monthStart, 1));
+  const dow = d.getUTCDay();
+  if (dow !== 1) d.setUTCDate(d.getUTCDate() + (dow === 0 ? 1 : 8 - dow));
+  const weeks = [];
+  while (d <= qEnd) {
+    weeks.push(d.toISOString().slice(0, 10));
+    d = new Date(d); d.setUTCDate(d.getUTCDate() + 7);
+  }
+  return weeks;
+}
+
+function fmtWeekLabel(w) {
+  const mon = new Date(w + 'T00:00:00Z');
+  const fri = new Date(w + 'T00:00:00Z');
+  fri.setUTCDate(fri.getUTCDate() + 4);
+  const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${mon.getUTCDate()} ${M[mon.getUTCMonth()]} – ${fri.getUTCDate()} ${M[fri.getUTCMonth()]}`;
+}
+
 // ── GET /api/planner/week ─────────────────────────────────────────────────────
 
 router.get('/week', requireAuth, async (req, res) => {
@@ -79,15 +107,216 @@ router.get('/week', requireAuth, async (req, res) => {
   }
 });
 
+// ── GET /api/planner/quarter ──────────────────────────────────────────────────
+// Returns per-week summary counts for all weeks in a quarter.
+
+router.get('/quarter', requireAuth, async (req, res) => {
+  try {
+    const isManager = ['manager', 'executive'].includes(req.session.role);
+    const cq   = currentQuarter();
+    const q    = req.query.quarter ? parseInt(req.query.quarter) : cq.quarter;
+    const yr   = req.query.year    ? parseInt(req.query.year)    : cq.year;
+    const repId = isManager && req.query.rep_id
+      ? parseInt(req.query.rep_id)
+      : req.session.userId;
+
+    const weeks = quarterWeeks(q, yr);
+
+    // Counts for all weeks in one query
+    const { rows: counts } = await db.query(`
+      SELECT
+        planned_week,
+        COUNT(*)::INTEGER                                          AS total,
+        COUNT(*) FILTER (WHERE status = 'confirmed')::INTEGER     AS confirmed,
+        COUNT(*) FILTER (WHERE status = 'suggested')::INTEGER     AS suggested,
+        COUNT(*) FILTER (WHERE status = 'completed')::INTEGER     AS completed,
+        COUNT(*) FILTER (WHERE status = 'skipped')::INTEGER       AS skipped
+      FROM call_plan_items
+      WHERE rep_id = $1 AND planned_week >= $2 AND planned_week <= $3
+      GROUP BY planned_week
+    `, [repId, weeks[0], weeks[weeks.length - 1]]);
+
+    const { rows: submitted } = await db.query(`
+      SELECT week_start FROM weekly_plans
+      WHERE rep_id = $1 AND week_start >= $2 AND week_start <= $3
+    `, [repId, weeks[0], weeks[weeks.length - 1]]);
+
+    const submittedSet = new Set(submitted.map(r =>
+      r.week_start instanceof Date ? r.week_start.toISOString().slice(0, 10) : String(r.week_start).slice(0, 10)
+    ));
+    const countMap = new Map(counts.map(c => [
+      c.planned_week instanceof Date ? c.planned_week.toISOString().slice(0, 10) : String(c.planned_week).slice(0, 10),
+      c
+    ]));
+
+    const result = weeks.map(w => {
+      const c = countMap.get(w) || { total: 0, confirmed: 0, suggested: 0, completed: 0, skipped: 0 };
+      return {
+        week:      w,
+        label:     fmtWeekLabel(w),
+        submitted: submittedSet.has(w),
+        total:     c.total,
+        confirmed: c.confirmed,
+        suggested: c.suggested,
+        completed: c.completed,
+        skipped:   c.skipped,
+      };
+    });
+
+    res.json({ quarter: q, year: yr, rep_id: repId, weeks: result });
+  } catch (err) {
+    console.error('[planner] quarter error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Shared: cluster stores geographically and assign to 5 days ────────────────
+
+function clusterIntoDays(stores) {
+  const MAX_PER_DAY = 8;
+  const clusterMap  = new Map();
+  for (const s of stores) {
+    const key = `${s.state || 'ZZZ'}::${(s.postcode || '').slice(0, 3)}`;
+    if (!clusterMap.has(key)) clusterMap.set(key, []);
+    clusterMap.get(key).push(s);
+  }
+  const sortedClusters = [...clusterMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, cs]) => {
+      cs.sort((a, b) => {
+        const pa = (a.postcode || ''), pb = (b.postcode || '');
+        if (pa !== pb) return pa.localeCompare(pb);
+        const ga = a.grade === 'A' ? 0 : a.grade === 'B' ? 1 : 2;
+        const gb = b.grade === 'A' ? 0 : b.grade === 'B' ? 1 : 2;
+        return ga - gb;
+      });
+      return cs;
+    });
+
+  const dayBuckets = [[], [], [], [], []];
+  let dayIdx = 0;
+  outer: for (const cluster of sortedClusters) {
+    for (const s of cluster) {
+      if (dayBuckets[dayIdx].length >= MAX_PER_DAY) {
+        if (++dayIdx >= 5) break outer;
+      }
+      dayBuckets[dayIdx].push(s);
+    }
+  }
+  // Within each day sort by full postcode ascending
+  for (const bucket of dayBuckets) {
+    bucket.sort((a, b) => (a.postcode || '').localeCompare(b.postcode || ''));
+  }
+  return dayBuckets;
+}
+
 // ── POST /api/planner/generate ────────────────────────────────────────────────
 
 router.post('/generate', requireAuth, async (req, res) => {
   try {
     const isManager = ['manager', 'executive'].includes(req.session.role);
-    const week  = req.body.week ? isoMonday(req.body.week) : currentWeek();
     const repId = isManager && req.body.rep_id ? parseInt(req.body.rep_id) : req.session.userId;
+    const scope = req.body.scope || 'week';
 
-    // Find overdue stores sorted by grade priority then geography (state + postcode)
+    // ── Quarter-wide generate ────────────────────────────────────────────────
+    if (scope === 'quarter') {
+      const cq     = currentQuarter();
+      const q      = req.body.quarter ? parseInt(req.body.quarter) : cq.quarter;
+      const yr     = req.body.year    ? parseInt(req.body.year)    : cq.year;
+      const weeks  = quarterWeeks(q, yr);
+
+      const qStartMs = new Date(weeks[0] + 'T00:00:00Z').getTime();
+      const qEndMs   = new Date(weeks[weeks.length - 1] + 'T23:59:59Z').getTime();
+
+      // Delete all suggested items for this rep in these weeks
+      await db.query(
+        `DELETE FROM call_plan_items WHERE rep_id = $1 AND planned_week >= $2 AND planned_week <= $3 AND status = 'suggested'`,
+        [repId, weeks[0], weeks[weeks.length - 1]]
+      );
+
+      // All active graded stores with last visit date
+      const { rows: stores } = await db.query(`
+        SELECT
+          s.id AS store_id, s.name, s.grade, s.state, s.postcode,
+          (SELECT MAX(v.visited_at) FROM visits v WHERE v.store_id = s.id) AS last_visit
+        FROM stores s
+        WHERE s.rep_id = $1 AND s.active = TRUE AND s.is_prospect = FALSE AND s.grade IN ('A','B','C')
+      `, [repId]);
+
+      if (stores.length === 0) {
+        return res.json({ ok: true, generated: 0, weeks_planned: 0, message: 'No graded stores found' });
+      }
+
+      // Committed items (non-suggested) that we must not overwrite
+      const { rows: committed } = await db.query(`
+        SELECT store_id, planned_week FROM call_plan_items
+        WHERE rep_id = $1 AND planned_week >= $2 AND planned_week <= $3 AND status != 'suggested'
+      `, [repId, weeks[0], weeks[weeks.length - 1]]);
+      const committedSet = new Set(committed.map(c => `${c.store_id}:${String(c.planned_week).slice(0,10)}`));
+
+      const INTERVAL_A  = 42 * 86400000; // 6 weeks ms
+      const INTERVAL_BC = 84 * 86400000; // 12 weeks ms
+
+      // Build week buckets
+      const weekBuckets = new Map();
+      for (const w of weeks) weekBuckets.set(w, []);
+
+      for (const store of stores) {
+        const interval  = store.grade === 'A' ? INTERVAL_A : INTERVAL_BC;
+        const lastVisitMs = store.last_visit ? new Date(store.last_visit).getTime() : null;
+
+        // First visit: next due date clamped to quarter start
+        const firstDueMs = lastVisitMs
+          ? Math.max(qStartMs, lastVisitMs + interval)
+          : qStartMs;
+
+        const visitDueDates = [];
+        if (firstDueMs <= qEndMs) visitDueDates.push(firstDueMs);
+
+        // A stores get a second visit 6 weeks after the first
+        if (store.grade === 'A' && visitDueDates.length > 0) {
+          const secondDueMs = visitDueDates[0] + INTERVAL_A;
+          if (secondDueMs <= qEndMs) visitDueDates.push(secondDueMs);
+        }
+
+        for (const dueMs of visitDueDates) {
+          // Find first quarter week on or after the due date
+          let targetWeek = null;
+          for (const w of weeks) {
+            if (new Date(w + 'T00:00:00Z').getTime() >= dueMs) { targetWeek = w; break; }
+          }
+          if (!targetWeek) continue;
+          if (committedSet.has(`${store.store_id}:${targetWeek}`)) continue;
+          const bucket = weekBuckets.get(targetWeek);
+          if (bucket.some(s => s.store_id === store.store_id)) continue;
+          bucket.push({ ...store });
+        }
+      }
+
+      // Insert each week's stores with geographic clustering
+      let totalInserted = 0, weeksPlanned = 0;
+      for (const [week, wStores] of weekBuckets) {
+        if (wStores.length === 0) continue;
+        const dayBuckets = clusterIntoDays(wStores);
+        for (let d = 0; d < 5; d++) {
+          for (let pos = 0; pos < dayBuckets[d].length; pos++) {
+            await db.query(`
+              INSERT INTO call_plan_items (rep_id, store_id, planned_week, day_of_week, position, status)
+              VALUES ($1, $2, $3, $4, $5, 'suggested')
+              ON CONFLICT (rep_id, store_id, planned_week) DO NOTHING
+            `, [repId, dayBuckets[d][pos].store_id, week, d + 1, pos + 1]);
+            totalInserted++;
+          }
+        }
+        if (dayBuckets.some(b => b.length > 0)) weeksPlanned++;
+      }
+
+      return res.json({ ok: true, generated: totalInserted, weeks_planned: weeksPlanned });
+    }
+
+    // ── Single-week generate (default) ──────────────────────────────────────
+    const week  = req.body.week ? isoMonday(req.body.week) : currentWeek();
+
     const { rows: overdue } = await db.query(`
       SELECT
         s.id AS store_id, s.name, s.grade, s.state, s.postcode,
@@ -99,29 +328,20 @@ router.post('/generate', requireAuth, async (req, res) => {
         )::INTEGER AS days_since_visit
       FROM stores s
       WHERE
-        s.rep_id = $1
-        AND s.active = TRUE
-        AND s.is_prospect = FALSE
-        AND s.grade IN ('A', 'B', 'C')
+        s.rep_id = $1 AND s.active = TRUE AND s.is_prospect = FALSE AND s.grade IN ('A','B','C')
         AND (
           (s.grade = 'A' AND COALESCE(
             (SELECT MAX(v2.visited_at) FROM visits v2 WHERE v2.store_id = s.id),
             NOW() - INTERVAL '100 years'
           ) < NOW() - INTERVAL '6 weeks')
           OR
-          (s.grade IN ('B', 'C') AND COALESCE(
+          (s.grade IN ('B','C') AND COALESCE(
             (SELECT MAX(v3.visited_at) FROM visits v3 WHERE v3.store_id = s.id),
             NOW() - INTERVAL '100 years'
           ) < NOW() - INTERVAL '12 weeks')
         )
-      ORDER BY
-        CASE s.grade WHEN 'A' THEN 1 WHEN 'B' THEN 2 ELSE 3 END,
-        s.state NULLS LAST,
-        s.postcode NULLS LAST,
-        days_since_visit DESC NULLS LAST
     `, [repId]);
 
-    // Delete existing SUGGESTED items for this rep/week (keep confirmed/completed/skipped)
     await db.query(
       `DELETE FROM call_plan_items WHERE rep_id = $1 AND planned_week = $2 AND status = 'suggested'`,
       [repId, week]
@@ -131,73 +351,26 @@ router.post('/generate', requireAuth, async (req, res) => {
       return res.json({ ok: true, generated: 0, overdue_total: 0, message: 'No overdue stores found' });
     }
 
-    // Find stores already in the plan (confirmed/completed/skipped) so we don't re-add them
     const { rows: existing } = await db.query(
       `SELECT store_id FROM call_plan_items WHERE rep_id = $1 AND planned_week = $2`,
       [repId, week]
     );
-    const existingStoreIds = new Set(existing.map(r => r.store_id));
-
-    const newItems = overdue.filter(s => !existingStoreIds.has(s.store_id));
-    const MAX_PER_DAY = 8;
-    const itemsToInsert = newItems.slice(0, MAX_PER_DAY * 5);
+    const existingIds = new Set(existing.map(r => r.store_id));
+    const itemsToInsert = overdue.filter(s => !existingIds.has(s.store_id)).slice(0, 40);
 
     if (itemsToInsert.length === 0) {
       return res.json({ ok: true, generated: 0, overdue_total: overdue.length, message: 'All overdue stores already in plan' });
     }
 
-    // ── Geographic clustering ──────────────────────────────────────────────
-    // Group into clusters keyed by state + 3-char postcode prefix so nearby
-    // stores land on the same day rather than being scattered across the week.
-    const clusterMap = new Map();
-    for (const s of itemsToInsert) {
-      const prefix = (s.postcode || '').slice(0, 3);
-      const key = `${s.state || 'ZZZ'}::${prefix}`;
-      if (!clusterMap.has(key)) clusterMap.set(key, []);
-      clusterMap.get(key).push(s);
-    }
-
-    // Sort clusters: state → postcode prefix (both ascending)
-    const sortedClusters = [...clusterMap.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([, stores]) => {
-        // Within each cluster: postcode ascending, then grade (A first), then most overdue first
-        stores.sort((a, b) => {
-          const pa = (a.postcode || ''), pb = (b.postcode || '');
-          if (pa !== pb) return pa.localeCompare(pb);
-          const ga = a.grade === 'A' ? 0 : a.grade === 'B' ? 1 : 2;
-          const gb = b.grade === 'A' ? 0 : b.grade === 'B' ? 1 : 2;
-          if (ga !== gb) return ga - gb;
-          return (b.days_since_visit || 0) - (a.days_since_visit || 0);
-        });
-        return stores;
-      });
-
-    // Assign clusters to days Mon–Fri by filling each day before advancing.
-    // Keeping whole clusters together minimises driving within a day.
-    const dayBuckets  = [[], [], [], [], []]; // index 0 = Mon (day_of_week 1)
-    let dayIdx = 0;
-    outer: for (const cluster of sortedClusters) {
-      for (const store of cluster) {
-        if (dayBuckets[dayIdx].length >= MAX_PER_DAY) {
-          dayIdx++;
-          if (dayIdx >= 5) break outer;
-        }
-        dayBuckets[dayIdx].push(store);
-      }
-    }
-
-    // Insert — within each day sort by postcode ascending (requirement 4)
+    const dayBuckets = clusterIntoDays(itemsToInsert);
     let inserted = 0;
     for (let d = 0; d < 5; d++) {
-      dayBuckets[d].sort((a, b) => (a.postcode || '').localeCompare(b.postcode || ''));
       for (let pos = 0; pos < dayBuckets[d].length; pos++) {
-        const item = dayBuckets[d][pos];
         await db.query(`
           INSERT INTO call_plan_items (rep_id, store_id, planned_week, day_of_week, position, status)
           VALUES ($1, $2, $3, $4, $5, 'suggested')
           ON CONFLICT (rep_id, store_id, planned_week) DO NOTHING
-        `, [repId, item.store_id, week, d + 1, pos + 1]);
+        `, [repId, dayBuckets[d][pos].store_id, week, d + 1, pos + 1]);
         inserted++;
       }
     }
@@ -205,7 +378,7 @@ router.post('/generate', requireAuth, async (req, res) => {
     res.json({ ok: true, generated: inserted, overdue_total: overdue.length });
   } catch (err) {
     console.error('[planner] generate error:', err.message);
-    res.status(500).json({ error: 'Failed to generate plan' });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -300,29 +473,44 @@ router.patch('/items/:id', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    const { day_of_week, position, status, confirmed_time, notes } = req.body;
+    const { day_of_week, planned_week, position, status, confirmed_time, notes } = req.body;
+    const targetWeek = planned_week ? isoMonday(planned_week) : null;
 
-    // If moving to a different day, auto-assign to end of that day
+    // If moving to a different week, check for conflict (UNIQUE rep+store+week)
+    if (targetWeek && targetWeek !== String(item.planned_week).slice(0, 10)) {
+      const { rows: conflict } = await db.query(
+        `SELECT id FROM call_plan_items WHERE rep_id = $1 AND store_id = $2 AND planned_week = $3 AND id != $4`,
+        [item.rep_id, item.store_id, targetWeek, itemId]
+      );
+      if (conflict.length > 0) {
+        return res.status(409).json({ error: 'Store is already planned for that week' });
+      }
+    }
+
+    // Auto-assign position when moving to a different day or week
+    const effectiveWeek = targetWeek ?? String(item.planned_week).slice(0, 10);
+    const effectiveDay  = day_of_week ?? item.day_of_week;
     let newPosition = position ?? null;
-    if (day_of_week !== undefined && day_of_week !== item.day_of_week && position === undefined) {
+    if (position === undefined && (effectiveDay !== item.day_of_week || effectiveWeek !== String(item.planned_week).slice(0, 10))) {
       const { rows: [posRow] } = await db.query(`
         SELECT COALESCE(MAX(position), 0) + 1 AS next_pos
         FROM call_plan_items
         WHERE rep_id = $1 AND planned_week = $2 AND day_of_week = $3 AND id != $4
-      `, [item.rep_id, item.planned_week, day_of_week, itemId]);
+      `, [item.rep_id, effectiveWeek, effectiveDay, itemId]);
       newPosition = posRow.next_pos;
     }
 
     const { rows: [updated] } = await db.query(`
       UPDATE call_plan_items SET
-        day_of_week    = COALESCE($2, day_of_week),
-        position       = COALESCE($3, position),
-        status         = COALESCE($4, status),
-        confirmed_time = CASE WHEN $5::TEXT IS NOT NULL THEN $5 ELSE confirmed_time END,
-        notes          = CASE WHEN $6::TEXT IS NOT NULL THEN $6 ELSE notes END
+        planned_week   = COALESCE($2, planned_week),
+        day_of_week    = COALESCE($3, day_of_week),
+        position       = COALESCE($4, position),
+        status         = COALESCE($5, status),
+        confirmed_time = CASE WHEN $6::TEXT IS NOT NULL THEN $6 ELSE confirmed_time END,
+        notes          = CASE WHEN $7::TEXT IS NOT NULL THEN $7 ELSE notes END
       WHERE id = $1
       RETURNING *
-    `, [itemId, day_of_week ?? null, newPosition, status ?? null,
+    `, [itemId, targetWeek, day_of_week ?? null, newPosition, status ?? null,
         confirmed_time !== undefined ? (confirmed_time || null) : null,
         notes !== undefined ? (notes || null) : null]);
 
@@ -353,6 +541,70 @@ router.delete('/items/:id', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('[planner] delete item error:', err.message);
     res.status(500).json({ error: 'Failed to remove item' });
+  }
+});
+
+// ── POST /api/planner/move-day ────────────────────────────────────────────────
+// Moves ALL items from (from_week, from_day) to (to_week, to_day).
+// Items that would conflict (store already in to_week) are skipped.
+
+router.post('/move-day', requireAuth, async (req, res) => {
+  try {
+    const isManager = ['manager', 'executive'].includes(req.session.role);
+    const { from_week, from_day, to_week, to_day } = req.body;
+    const repId = isManager && req.body.rep_id ? parseInt(req.body.rep_id) : req.session.userId;
+
+    if (!from_week || !from_day || !to_week || !to_day) {
+      return res.status(400).json({ error: 'from_week, from_day, to_week, to_day required' });
+    }
+
+    const fromWeek = isoMonday(from_week);
+    const toWeek   = isoMonday(to_week);
+    const fromDay  = parseInt(from_day);
+    const toDay    = parseInt(to_day);
+
+    if (fromWeek === toWeek && fromDay === toDay) {
+      return res.json({ ok: true, moved: 0, skipped: 0, message: 'Same day — nothing to do' });
+    }
+
+    const { rows: items } = await db.query(`
+      SELECT * FROM call_plan_items
+      WHERE rep_id = $1 AND planned_week = $2 AND day_of_week = $3
+      ORDER BY position
+    `, [repId, fromWeek, fromDay]);
+
+    if (items.length === 0) {
+      return res.json({ ok: true, moved: 0, skipped: 0, message: 'No items in source day' });
+    }
+
+    const { rows: [posRow] } = await db.query(`
+      SELECT COALESCE(MAX(position), 0) AS max_pos FROM call_plan_items
+      WHERE rep_id = $1 AND planned_week = $2 AND day_of_week = $3
+    `, [repId, toWeek, toDay]);
+
+    let nextPos = posRow.max_pos + 1;
+    let moved = 0, skipped = 0;
+
+    for (const item of items) {
+      // When moving to a different week check UNIQUE (rep, store, week) constraint
+      if (toWeek !== fromWeek) {
+        const { rows: conflict } = await db.query(
+          `SELECT id FROM call_plan_items WHERE rep_id = $1 AND store_id = $2 AND planned_week = $3 AND id != $4`,
+          [repId, item.store_id, toWeek, item.id]
+        );
+        if (conflict.length > 0) { skipped++; continue; }
+      }
+      await db.query(
+        `UPDATE call_plan_items SET planned_week = $1, day_of_week = $2, position = $3 WHERE id = $4`,
+        [toWeek, toDay, nextPos++, item.id]
+      );
+      moved++;
+    }
+
+    res.json({ ok: true, moved, skipped });
+  } catch (err) {
+    console.error('[planner] move-day error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 

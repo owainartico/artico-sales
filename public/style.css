@@ -2036,3 +2036,106 @@ body {
 .btn--danger:active {
   background: #FECACA;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Quarter Planner — Accordion
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Quarter nav ─────────────────────────────────────────────── */
+.planner-quarter-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) 0 var(--space-2);
+}
+.planner-quarter-label {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--color-navy);
+  text-align: center;
+  flex: 1;
+}
+
+/* ── Week accordion row ──────────────────────────────────────── */
+.plan-week-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-2);
+  cursor: pointer;
+  user-select: none;
+  gap: var(--space-2);
+  transition: background 0.12s;
+}
+.plan-week-row:active { background: var(--color-bg); }
+.plan-week-row--current { border-color: var(--color-navy); }
+
+.plan-week-row__left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.plan-week-row__label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+.plan-week-row__sub {
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+.plan-week-row__submitted {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #065F46;
+  background: #ECFDF5;
+  border-radius: 999px;
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
+.plan-week-row__right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+.plan-week-row__count {
+  font-size: 0.8rem;
+  color: var(--color-muted);
+}
+.plan-week-row__chevron {
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  transition: transform 0.2s;
+  display: inline-block;
+}
+.plan-week-row--open .plan-week-row__chevron {
+  transform: rotate(180deg);
+}
+
+/* ── Week detail panel ───────────────────────────────────────── */
+.plan-week-detail {
+  border: 1px solid var(--color-border);
+  border-top: none;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  margin-top: calc(-1 * var(--space-2));
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-bg);
+}
+
+/* ── Move-store-day / move-day active buttons ────────────────── */
+.move-store-day-btn.active,
+.move-day-btn.active {
+  background: var(--color-navy);
+  color: #fff;
+  border-color: var(--color-navy);
+}
