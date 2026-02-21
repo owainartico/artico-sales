@@ -12,7 +12,7 @@
  */
 
 const db                                               = require('../db');
-const { fetchInvoicesWithTimeout, fetchItemBrandMap, invAmount } = require('./sync');
+const { fetchInvoicesWithTimeout, fetchCreditNotesWithTimeout, fetchItemBrandMap, invAmount } = require('./sync');
 
 // ── In-memory cache ───────────────────────────────────────────────────────────
 
@@ -234,8 +234,9 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
   const yearStart = `${month.slice(0, 4)}-01-01`;
 
   // ── Parallel fetches ──
-  const [invoices, mTargetRow, ytdTargets, histTargets, visits, overdue, syncAt, storeRows] = await Promise.all([
+  const [invoices, creditNotes, mTargetRow, ytdTargets, histTargets, visits, overdue, syncAt, storeRows] = await Promise.all([
     fetchInvoicesWithTimeout(histFrom, mTo).catch((err) => { console.error('[dashboard] rep invoice fetch failed:', err.message); return []; }),
+    fetchCreditNotesWithTimeout(histFrom, mTo).catch((err) => { console.error('[dashboard] rep credit note fetch failed:', err.message); return []; }),
     db.query(`SELECT amount FROM revenue_targets WHERE rep_id=$1 AND month=$2`, [repId, month]),
     db.query(
       `SELECT SUM(amount) AS total FROM revenue_targets
@@ -252,10 +253,21 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
     db.query(`SELECT zoho_contact_id FROM stores WHERE rep_id=$1 AND active=TRUE`, [repId]),
   ]);
 
+  // Combine invoices with negated credit notes for net revenue calculations.
+  // Credit notes share the same customer_id, salesperson_name, date fields as invoices.
+  // Flipping their total negative means invAmount() returns a negative value,
+  // so byMonth() and territory calculations automatically subtract credits.
+  // line_items are absent on credit notes so buildBrandTotals skips them naturally.
+  // newDoorCount and data_loading still reference the raw invoices array.
+  const allTx = [
+    ...invoices,
+    ...creditNotes.map(cn => ({ ...cn, total: -(Number(cn.total) || 0) })),
+  ];
+
   const target     = Number(mTargetRow.rows[0]?.amount || 0);
   const ytd_target = Number(ytdTargets.rows[0]?.total  || 0);
 
-  const actuals    = byMonth(invoices, spNames);
+  const actuals    = byMonth(allTx, spNames);  // net of credit notes
   const actual     = actuals[month] || 0;
   const percentage = target > 0 ? Math.round((actual / target) * 100) : null;
 
@@ -275,7 +287,7 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
 
   // Territory growth — compare current month vs same month LY, by store ownership
   const repContactIds = new Set(storeRows.rows.map(s => String(s.zoho_contact_id)));
-  const territory_growth = computeTerritoryGrowth(invoices, repContactIds, mFrom, mTo);
+  const territory_growth = computeTerritoryGrowth(allTx, repContactIds, mFrom, mTo);
 
   // Brand breakdown (current month only) — dynamic from item catalog
   const mInvoices = invoices.filter(i => spNames.includes(i.salesperson_name) && i.date >= mFrom && i.date <= mTo);
@@ -342,9 +354,10 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   const qStart  = `${new Date().getFullYear()}-${String(qMonth + 1).padStart(2, '0')}-01`;
 
   // ── Parallel fetches ──
-  const [repsResult, invoices, mTargets, ytdTargets, brandMTargets, syncAt, storesByRepResult, gradeDist, gradeTrend] = await Promise.all([
+  const [repsResult, invoices, creditNotes, mTargets, ytdTargets, brandMTargets, syncAt, storesByRepResult, gradeDist, gradeTrend] = await Promise.all([
     db.query(`SELECT id, name, zoho_salesperson_id, zoho_salesperson_ids FROM users WHERE role='rep' AND active=TRUE ORDER BY name`),
     fetchInvoicesWithTimeout(histFrom, mTo).catch((err) => { console.error('[dashboard] team invoice fetch failed:', err.message); return []; }),
+    fetchCreditNotesWithTimeout(histFrom, mTo).catch((err) => { console.error('[dashboard] team credit note fetch failed:', err.message); return []; }),
     db.query(`SELECT rep_id, amount FROM revenue_targets WHERE month=$1`, [month]),
     db.query(
       `SELECT rep_id, SUM(amount) AS total FROM revenue_targets
@@ -372,6 +385,13 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
       [qStart]
     ).catch(() => ({ rows: [{ upgrades: 0, downgrades: 0 }] })),
   ]);
+
+  // Combine invoices with negated credit notes — same approach as rep dashboard.
+  // All revenue calculations use allTx; brand line items and new-door counts use invoices only.
+  const allTx = [
+    ...invoices,
+    ...creditNotes.map(cn => ({ ...cn, total: -(Number(cn.total) || 0) })),
+  ];
 
   // Build rep_id → Set<zoho_contact_id>
   const contactsByRep = new Map();
@@ -404,14 +424,14 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   // Leaderboard
   const leaderboard = reps.map(rep => {
     const spNames = repSpNames(rep);
-    const actuals = byMonth(invoices, spNames);
+    const actuals = byMonth(allTx, spNames);  // net of credit notes
     const actual  = actuals[month] || 0;
     const target  = tByRep[rep.id] || 0;
     const ytd_actual = Object.entries(actuals)
       .filter(([m]) => m >= yearStart.slice(0, 7) && m <= month)
       .reduce((s, [, v]) => s + v, 0);
     const repContacts  = contactsByRep.get(rep.id) || new Set();
-    const tg   = computeTerritoryGrowth(invoices, repContacts, mFrom, mTo);
+    const tg   = computeTerritoryGrowth(allTx, repContacts, mFrom, mTo);
     const dist = gradeDistByRep[rep.id] || { A: 0, B: 0, C: 0, ungraded: 0 };
     return {
       rep_id: rep.id, name: rep.name, actual, target,
@@ -436,7 +456,7 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   // Company territory growth — union of all assigned store contacts
   const allAssignedContacts = new Set();
   for (const ids of contactsByRep.values()) for (const id of ids) allAssignedContacts.add(id);
-  const company_territory_growth = computeTerritoryGrowth(invoices, allAssignedContacts, mFrom, mTo);
+  const company_territory_growth = computeTerritoryGrowth(allTx, allAssignedContacts, mFrom, mTo);
 
   const ytd = {
     actual:  leaderboard.reduce((s, r) => s + r.ytd_actual, 0),
@@ -472,10 +492,10 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
     return { rep_id: rep.id, name: rep.name, count: newDoorCount(invoices, repSpNames(rep), mFrom, mTo) };
   });
 
-  // Monthly history for company total (18 months)
+  // Monthly history for company total (18 months) — net of credit notes
   const monthly_history = months18.map(m => {
     const actual = reps.reduce((s, rep) => {
-      return s + (byMonth(invoices, repSpNames(rep))[m] || 0);
+      return s + (byMonth(allTx, repSpNames(rep))[m] || 0);
     }, 0);
     return { month: m, actual, target: 0 }; // target aggregation not stored by month-company
   });

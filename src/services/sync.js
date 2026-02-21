@@ -144,22 +144,21 @@ async function fetchItemBrandMap() {
 
 // ── Invoice amount helper ─────────────────────────────────────────────────────
 //
-// Zoho Books list API does not always return 'sub_total' (the ex-GST field).
-// The list endpoint reliably returns 'total' (inc-GST).
-// Some API versions / org settings also return 'sub_total'.
+// Zoho Books list API only returns 'total' (inc-GST). The 'sub_total' field
+// (ex-GST) is only available on the individual invoice detail endpoint, which
+// would require one API call per invoice (~400+ calls) — far too slow.
 //
-// Priority: sub_total (ex-GST, preferred) → total (inc-GST, fallback)
-// All revenue calculations in the app must use this helper, not inv.sub_total directly.
+// All Australian invoices include 10% GST, so: ex-GST = total / 1.1
+// All revenue calculations in the app must use this helper.
 
 /**
- * Return the ex-GST invoice amount.
- * Uses sub_total when present (ex-GST), falls back to total (inc-GST).
- * @param {object} inv  – raw Zoho invoice object
+ * Return the ex-GST invoice (or credit note) amount.
+ * Divides the inc-GST total by 1.1 (Australian 10% GST).
+ * @param {object} inv  – raw Zoho invoice or credit note object
  * @returns {number}
  */
 function invAmount(inv) {
-  const v = inv.sub_total ?? inv.total;
-  return Number(v) || 0;
+  return Number(inv.total || 0) / 1.1;
 }
 
 // ── Invoice in-memory cache ───────────────────────────────────────────────────
@@ -439,6 +438,70 @@ async function fetchSalesOrders(fromDate, toDate, extraParams = {}) {
   return all;
 }
 
+// ── fetchCreditNotes(fromDate, toDate) ────────────────────────────────────────
+
+/**
+ * In-memory cache for credit notes — same pattern as invoice cache.
+ * Credit notes reduce revenue; they are fetched alongside invoices and
+ * stored with the same 18-month date window.
+ */
+const _creditNoteCache = new Map();
+const CREDIT_NOTE_CACHE_TTL = 60 * 60 * 1000; // 60 minutes
+
+function _getCachedCreditNotes(fromDate, toDate) {
+  const key   = `${fromDate}::${toDate}`;
+  const entry = _creditNoteCache.get(key);
+  if (!entry || Date.now() - entry.ts > CREDIT_NOTE_CACHE_TTL) {
+    _creditNoteCache.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+
+function _setCachedCreditNotes(fromDate, toDate, data) {
+  _creditNoteCache.set(`${fromDate}::${toDate}`, { data, ts: Date.now() });
+}
+
+/**
+ * Fetch credit notes (open + closed) within the given date range from Zoho.
+ * Credit notes represent refunds / adjustments that reduce gross revenue.
+ * Cached for 60 minutes using the same TTL as invoice cache.
+ *
+ * @param {string} fromDate – 'YYYY-MM-DD'
+ * @param {string} toDate   – 'YYYY-MM-DD'
+ * @returns {Array} raw Zoho creditnote objects (each has customer_id, salesperson_name, date, total)
+ */
+async function fetchCreditNotes(fromDate, toDate) {
+  const cached = _getCachedCreditNotes(fromDate, toDate);
+  if (cached) {
+    console.log(`[sync] fetchCreditNotes cache hit — ${fromDate} to ${toDate} (${cached.length} notes)`);
+    return cached;
+  }
+
+  console.log(`[sync] fetchCreditNotes fetching from Zoho — ${fromDate} to ${toDate}`);
+  const baseParams = { date_start: fromDate, date_end: toDate };
+
+  // Fetch open (partially applied) and closed (fully applied) credit notes.
+  // Void/draft credit notes are excluded — they have no revenue impact.
+  const [open, closed] = await Promise.all([
+    fetchAllPages('/creditnotes', 'creditnotes', { ...baseParams, status: 'open'   }),
+    fetchAllPages('/creditnotes', 'creditnotes', { ...baseParams, status: 'closed' }),
+  ]);
+
+  const seen = new Set();
+  const all  = [];
+  for (const cn of [...open, ...closed]) {
+    if (!seen.has(cn.creditnote_id)) {
+      seen.add(cn.creditnote_id);
+      all.push(cn);
+    }
+  }
+
+  _setCachedCreditNotes(fromDate, toDate, all);
+  console.log(`[sync] fetchCreditNotes cached — ${all.length} credit notes`);
+  return all;
+}
+
 // ── Background scheduler ──────────────────────────────────────────────────────
 
 let _schedulerStarted = false;
@@ -478,14 +541,17 @@ function startScheduler() {
       console.error('[scheduler] Initial store sync failed:', err.message)
     );
 
-    // Invoice cache pre-warm — starts immediately alongside store sync.
+    // Invoice + credit note cache pre-warm — both start immediately alongside store sync.
     // Covers both the team dashboard (18m history) and rep dashboard (13m subset).
     // NOTE: grading uses a separate 24m window and manages its own fetch with timeout.
-    console.log('[scheduler] Pre-warming 18m invoice cache...');
+    console.log('[scheduler] Pre-warming 18m invoice + credit note caches...');
     const { fromDate, toDate } = getMonthWindow(18);
     fetchInvoices(fromDate, toDate)
       .then(inv => console.log(`[scheduler] Invoice cache warm — ${inv.length} invoices`))
       .catch((err) => console.error('[scheduler] Invoice cache pre-warm (18m) failed:', err.message));
+    fetchCreditNotes(fromDate, toDate)
+      .then(cns => console.log(`[scheduler] Credit note cache warm — ${cns.length} notes`))
+      .catch((err) => console.error('[scheduler] Credit note pre-warm (18m) failed:', err.message));
 
     // Pre-warm item brand map
     fetchItemBrandMap().catch((err) =>
@@ -506,10 +572,14 @@ function startScheduler() {
     // Zoho fetch. Cache is atomically updated once new data arrives.
     // (Previously: invalidateInvoiceCache() + fetchInvoices() caused a ~60s
     //  window where the cache was empty → dashboard timeouts → $0 revenue.)
-    console.log('[scheduler] Refreshing invoice cache (gap-free)...');
+    console.log('[scheduler] Refreshing invoice + credit note caches (gap-free)...');
     const { fromDate, toDate } = getMonthWindow(18);
     refreshInvoiceCacheInBackground(fromDate, toDate).catch((err) =>
       console.error('[scheduler] Invoice cache refresh (18m) failed:', err.message)
+    );
+    // Credit notes: replace cache each hour (they're few in number, fast to fetch)
+    fetchCreditNotes(fromDate, toDate).catch((err) =>
+      console.error('[scheduler] Credit note cache refresh (18m) failed:', err.message)
     );
 
     // Refresh item brand map every hour too (brand assignments rarely change,
@@ -535,6 +605,17 @@ function fetchInvoicesWithTimeout(fromDate, toDate, timeoutMs = DASHBOARD_FETCH_
   return Promise.race([fetchInvoices(fromDate, toDate), timer]);
 }
 
+/**
+ * Fetch credit notes with a timeout. Falls back to [] on timeout/error.
+ * Used by the dashboard to avoid blocking on slow Zoho responses.
+ */
+function fetchCreditNotesWithTimeout(fromDate, toDate, timeoutMs = DASHBOARD_FETCH_TIMEOUT_MS) {
+  const timer = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Credit note fetch timed out after ${timeoutMs / 1000}s`)), timeoutMs)
+  );
+  return Promise.race([fetchCreditNotes(fromDate, toDate), timer]);
+}
+
 /** Returns a summary of the current invoice cache state (safe for diagnostics). */
 function getInvoiceCacheStats() {
   const entries = [];
@@ -557,6 +638,8 @@ module.exports = {
   fetchInvoices,
   fetchInvoicesWithTimeout,
   refreshInvoiceCacheInBackground,
+  fetchCreditNotes,
+  fetchCreditNotesWithTimeout,
   fetchSalesOrders,
   fetchItemBrandMap,
   invAmount,
