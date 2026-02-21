@@ -467,24 +467,25 @@ function startScheduler() {
     };
   }
 
-  // First sync 30 seconds after startup (lets DB connections settle)
-  setTimeout(async () => {
+  // 30 seconds after startup: run store sync AND start invoice pre-warm in parallel.
+  // Previously these were sequential (sync first, then invoice fetch), adding ~20s
+  // to the cold-start window. Running in parallel means the cache is warm ~60s
+  // after startup instead of ~100s, so fewer dashboard loads race the pre-warm.
+  setTimeout(() => {
+    // Store sync — fire-and-forget (doesn't block invoice pre-warm)
     console.log('[scheduler] Running initial store sync');
-    try {
-      await syncStores({ force: true });
-    } catch (err) {
-      console.error('[scheduler] Initial store sync failed:', err.message);
-    }
+    syncStores({ force: true }).catch((err) =>
+      console.error('[scheduler] Initial store sync failed:', err.message)
+    );
 
-    // Pre-warm invoice cache with 18m window.
+    // Invoice cache pre-warm — starts immediately alongside store sync.
     // Covers both the team dashboard (18m history) and rep dashboard (13m subset).
-    // Both dashboards use this same cache key so no live Zoho fetch on page load.
     // NOTE: grading uses a separate 24m window and manages its own fetch with timeout.
     console.log('[scheduler] Pre-warming 18m invoice cache...');
     const { fromDate, toDate } = getMonthWindow(18);
-    fetchInvoices(fromDate, toDate).catch((err) =>
-      console.error('[scheduler] Invoice cache pre-warm (18m) failed:', err.message)
-    );
+    fetchInvoices(fromDate, toDate)
+      .then(inv => console.log(`[scheduler] Invoice cache warm — ${inv.length} invoices`))
+      .catch((err) => console.error('[scheduler] Invoice cache pre-warm (18m) failed:', err.message));
 
     // Pre-warm item brand map
     fetchItemBrandMap().catch((err) =>
@@ -525,7 +526,7 @@ function startScheduler() {
 // Wraps fetchInvoices with a timeout so a slow/hanging Zoho response never
 // blocks the dashboard. Falls back to [] on timeout or error.
 
-const DASHBOARD_FETCH_TIMEOUT_MS = 45_000; // 45s — plenty for a cache hit; safe fallback
+const DASHBOARD_FETCH_TIMEOUT_MS = 120_000; // 120s — cache hit is instant; cold fetch of 18m data needs up to 90s
 
 function fetchInvoicesWithTimeout(fromDate, toDate, timeoutMs = DASHBOARD_FETCH_TIMEOUT_MS) {
   const timer = new Promise((_, reject) =>

@@ -291,8 +291,14 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
     }))
     .sort((a, b) => b.actual - a.actual);
 
+  // If invoices is empty, the Zoho cache hasn't warmed yet (cold start after deploy).
+  // Signal this to the frontend so it shows "loading" rather than $0.
+  // Don't cache a loading-state result — next request should try again.
+  const data_loading = invoices.length === 0;
+
   const result = {
     month,
+    data_loading,
     hero: {
       actual, target, percentage,
       ...runRateStats(month, actual, target),
@@ -314,7 +320,7 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
     last_sync_at: syncAt,
   };
 
-  setCached(key, result);
+  if (!data_loading) setCached(key, result);
   return result;
 }
 
@@ -474,8 +480,10 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
     return { month: m, actual, target: 0 }; // target aggregation not stored by month-company
   });
 
+  const data_loading = invoices.length === 0;
+
   const result = {
-    month, leaderboard, totals, ytd,
+    month, data_loading, leaderboard, totals, ytd,
     company_territory_growth,
     quarterly_grade_trend,
     brand_performance, new_doors_by_rep, monthly_history,
@@ -483,7 +491,7 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
     last_sync_at: syncAt,
   };
 
-  setCached(key, result);
+  if (!data_loading) setCached(key, result);
   return result;
 }
 

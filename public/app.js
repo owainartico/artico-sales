@@ -320,6 +320,24 @@ async function loadDashboard(force = false) {
     return;
   }
 
+  // Invoice cache still warming after server restart — show holding screen and auto-retry
+  if (data.data_loading) {
+    page.innerHTML = `
+      <div class="page-header">
+        <h1 class="page-title">Dashboard</h1>
+        <button class="btn-icon-sm" onclick="loadDashboard(true)" title="Refresh">↻</button>
+      </div>
+      <div class="empty-state">
+        <div class="empty-state__icon" style="font-size:2rem;animation:spin 1.5s linear infinite">⟳</div>
+        <div class="empty-state__title">Revenue data is loading</div>
+        <div class="empty-state__desc">Fetching 18 months of invoices from Zoho — usually ready within 90 seconds of startup.<br>This page will refresh automatically.</div>
+        <button class="btn btn--accent mt-4" onclick="loadDashboard(true)">Refresh now</button>
+      </div>`;
+    // Auto-retry in 30s — cache should be warm by then
+    setTimeout(() => { if (currentTab === 'dashboard') loadDashboard(true); }, 30_000);
+    return;
+  }
+
   if (_dashChart) { _dashChart.destroy(); _dashChart = null; }
 
   if (isManager) renderTeamDashboard(page, data);
