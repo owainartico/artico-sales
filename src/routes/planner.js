@@ -146,20 +146,64 @@ router.post('/generate', requireAuth, async (req, res) => {
       return res.json({ ok: true, generated: 0, overdue_total: overdue.length, message: 'All overdue stores already in plan' });
     }
 
-    // Spread evenly across 5 days (Mon–Fri)
-    const perDay = Math.ceil(itemsToInsert.length / 5);
-    for (let i = 0; i < itemsToInsert.length; i++) {
-      const dayOfWeek = Math.min(5, Math.floor(i / perDay) + 1);
-      const position  = (i % perDay) + 1;
-      const item = itemsToInsert[i];
-      await db.query(`
-        INSERT INTO call_plan_items (rep_id, store_id, planned_week, day_of_week, position, status)
-        VALUES ($1, $2, $3, $4, $5, 'suggested')
-        ON CONFLICT (rep_id, store_id, planned_week) DO NOTHING
-      `, [repId, item.store_id, week, dayOfWeek, position]);
+    // ── Geographic clustering ──────────────────────────────────────────────
+    // Group into clusters keyed by state + 3-char postcode prefix so nearby
+    // stores land on the same day rather than being scattered across the week.
+    const clusterMap = new Map();
+    for (const s of itemsToInsert) {
+      const prefix = (s.postcode || '').slice(0, 3);
+      const key = `${s.state || 'ZZZ'}::${prefix}`;
+      if (!clusterMap.has(key)) clusterMap.set(key, []);
+      clusterMap.get(key).push(s);
     }
 
-    res.json({ ok: true, generated: itemsToInsert.length, overdue_total: overdue.length });
+    // Sort clusters: state → postcode prefix (both ascending)
+    const sortedClusters = [...clusterMap.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, stores]) => {
+        // Within each cluster: postcode ascending, then grade (A first), then most overdue first
+        stores.sort((a, b) => {
+          const pa = (a.postcode || ''), pb = (b.postcode || '');
+          if (pa !== pb) return pa.localeCompare(pb);
+          const ga = a.grade === 'A' ? 0 : a.grade === 'B' ? 1 : 2;
+          const gb = b.grade === 'A' ? 0 : b.grade === 'B' ? 1 : 2;
+          if (ga !== gb) return ga - gb;
+          return (b.days_since_visit || 0) - (a.days_since_visit || 0);
+        });
+        return stores;
+      });
+
+    // Assign clusters to days Mon–Fri by filling each day before advancing.
+    // Keeping whole clusters together minimises driving within a day.
+    const MAX_PER_DAY = 8;
+    const dayBuckets  = [[], [], [], [], []]; // index 0 = Mon (day_of_week 1)
+    let dayIdx = 0;
+    outer: for (const cluster of sortedClusters) {
+      for (const store of cluster) {
+        if (dayBuckets[dayIdx].length >= MAX_PER_DAY) {
+          dayIdx++;
+          if (dayIdx >= 5) break outer;
+        }
+        dayBuckets[dayIdx].push(store);
+      }
+    }
+
+    // Insert — within each day sort by postcode ascending (requirement 4)
+    let inserted = 0;
+    for (let d = 0; d < 5; d++) {
+      dayBuckets[d].sort((a, b) => (a.postcode || '').localeCompare(b.postcode || ''));
+      for (let pos = 0; pos < dayBuckets[d].length; pos++) {
+        const item = dayBuckets[d][pos];
+        await db.query(`
+          INSERT INTO call_plan_items (rep_id, store_id, planned_week, day_of_week, position, status)
+          VALUES ($1, $2, $3, $4, $5, 'suggested')
+          ON CONFLICT (rep_id, store_id, planned_week) DO NOTHING
+        `, [repId, item.store_id, week, d + 1, pos + 1]);
+        inserted++;
+      }
+    }
+
+    res.json({ ok: true, generated: inserted, overdue_total: overdue.length });
   } catch (err) {
     console.error('[planner] generate error:', err.message);
     res.status(500).json({ error: 'Failed to generate plan' });
