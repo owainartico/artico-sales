@@ -12,7 +12,7 @@
  */
 
 const db                                               = require('../db');
-const { fetchInvoicesWithTimeout, fetchItemBrandMap } = require('./sync');
+const { fetchInvoicesWithTimeout, fetchItemBrandMap, invAmount } = require('./sync');
 
 // ── In-memory cache ───────────────────────────────────────────────────────────
 
@@ -153,7 +153,7 @@ function computeTerritoryGrowth(invoices, contactIds, mFrom, mTo) {
   let current = 0, ly = 0;
   for (const inv of invoices) {
     if (!contactIds.has(String(inv.customer_id))) continue;
-    const total = Number(inv.sub_total || 0);
+    const total = invAmount(inv);
     if (inv.date >= mFrom && inv.date <= mTo) current += total;
     if (inv.date >= lyFrom && inv.date <= lyTo) ly += total;
   }
@@ -172,7 +172,7 @@ function byMonth(invoices, spNames) {
   for (const inv of invoices) {
     if (!spNames.includes(inv.salesperson_name)) continue;
     const m = (inv.date || '').slice(0, 7);
-    if (m) out[m] = (out[m] || 0) + Number(inv.sub_total || 0);
+    if (m) out[m] = (out[m] || 0) + invAmount(inv);
   }
   return out;
 }

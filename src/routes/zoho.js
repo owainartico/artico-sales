@@ -10,7 +10,7 @@
 
 const express = require('express');
 const { makeZohoRequest, refreshAccessToken } = require('../services/zoho');
-const { syncStores, fetchInvoices, fetchInvoicesWithTimeout, invalidateInvoiceCache, refreshInvoiceCacheInBackground, getInvoiceCacheStats, isSyncRecentEnough } = require('../services/sync');
+const { syncStores, fetchInvoices, fetchInvoicesWithTimeout, invalidateInvoiceCache, refreshInvoiceCacheInBackground, getInvoiceCacheStats, isSyncRecentEnough, invAmount } = require('../services/sync');
 const { requireRole } = require('../middleware/auth');
 const db = require('../db');
 
@@ -159,7 +159,7 @@ router.get('/debug-deanne', requireRole('executive'), async (req, res) => {
       if (!spMap.has(sp)) spMap.set(sp, { count: 0, total: 0 });
       const e = spMap.get(sp);
       e.count++;
-      e.total += Number(inv.sub_total || 0);
+      e.total += invAmount(inv);
     }
     out.zoho_salesperson_names = [...spMap.entries()]
       .map(([name, { count, total }]) => ({ name, invoice_count: count, total: Math.round(total) }))
@@ -172,7 +172,7 @@ router.get('/debug-deanne', requireRole('executive'), async (req, res) => {
       for (const u of out.all_users) {
         const matched = invoices.filter(i => u.resolved_sp_names.includes(i.salesperson_name));
         u.matched_invoices = matched.length;
-        u.matched_revenue  = Math.round(matched.reduce((s, i) => s + Number(i.sub_total || 0), 0));
+        u.matched_revenue  = Math.round(matched.reduce((s, i) => s + invAmount(i), 0));
       }
     }
   } catch (err) {

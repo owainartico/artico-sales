@@ -15,7 +15,7 @@
  */
 
 const db = require('../db');
-const { fetchInvoices, fetchSalesOrders } = require('./sync');
+const { fetchInvoices, fetchSalesOrders, invAmount } = require('./sync');
 const { BRANDS_BY_SLUG } = require('../../config/brands');
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
@@ -124,13 +124,13 @@ async function getRepRevenue(repId, month) {
   );
 
   const ytd_actual = repInvoices.reduce(
-    (sum, inv) => sum + Number(inv.sub_total || 0),
+    (sum, inv) => sum + invAmount(inv),
     0
   );
 
   const actual = repInvoices
     .filter((inv) => inv.date >= monthFrom && inv.date <= monthTo)
-    .reduce((sum, inv) => sum + Number(inv.sub_total || 0), 0);
+    .reduce((sum, inv) => sum + invAmount(inv), 0);
 
   return {
     actual,

@@ -3,7 +3,7 @@
 const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const db = require('../db');
-const { fetchInvoices } = require('../services/sync');
+const { fetchInvoices, invAmount } = require('../services/sync');
 
 const router = express.Router();
 
@@ -193,7 +193,7 @@ router.get('/new-doors', requireAuth, async (req, res) => {
         rep_id:             rep?.id     || null,
         rep_name:           rep?.name   || inv.salesperson_name || '—',
         first_order_date:   inv.date,
-        first_order_value:  Number(inv.sub_total || 0),
+        first_order_value:  invAmount(inv),
       });
     }
 
@@ -279,7 +279,7 @@ router.get('/grade-review', requireAuth, requireRole('manager', 'executive'), as
 
     for (const store of stores) {
       const storeInvs = invoicesByCustomer.get(String(store.zoho_contact_id)) || [];
-      const revenue_12m = storeInvs.reduce((s, i) => s + Number(i.sub_total || 0), 0);
+      const revenue_12m = storeInvs.reduce((s, i) => s + invAmount(i), 0);
       const order_count = storeInvs.length;
 
       const skuSet = new Set();
@@ -428,7 +428,7 @@ router.get('/:id', requireAuth, async (req, res) => {
     const monthlyRevMap = {};
     for (const inv of storeInvoices) {
       const m = (inv.date || '').slice(0, 7);
-      if (m) monthlyRevMap[m] = (monthlyRevMap[m] || 0) + Number(inv.sub_total || 0);
+      if (m) monthlyRevMap[m] = (monthlyRevMap[m] || 0) + invAmount(inv);
     }
     const monthly_breakdown = months12.map(m => ({
       month: m,

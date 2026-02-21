@@ -21,7 +21,7 @@
  */
 
 const db           = require('../db');
-const { fetchInvoices } = require('./sync');
+const { fetchInvoices, invAmount } = require('./sync');
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
@@ -116,7 +116,7 @@ async function runAlert2(counts, invoices) {
   const revenueMap = {};
   for (const inv of invoices) {
     const cid = String(inv.customer_id);
-    revenueMap[cid] = (revenueMap[cid] || 0) + Number(inv.sub_total || 0);
+    revenueMap[cid] = (revenueMap[cid] || 0) + invAmount(inv);
   }
 
   const { rows: stores } = await db.query(`
@@ -161,7 +161,7 @@ async function runAlert3(counts, invoices) {
   const revenueMap = {};
   for (const inv of invoices) {
     const cid = String(inv.customer_id);
-    revenueMap[cid] = (revenueMap[cid] || 0) + Number(inv.sub_total || 0);
+    revenueMap[cid] = (revenueMap[cid] || 0) + invAmount(inv);
   }
 
   // Last invoice date per customer
@@ -242,7 +242,7 @@ async function runAlert4(counts, invoices) {
   const revenueMap = {};
   for (const inv of invoices) {
     const cid = String(inv.customer_id);
-    revenueMap[cid] = (revenueMap[cid] || 0) + Number(inv.sub_total || 0);
+    revenueMap[cid] = (revenueMap[cid] || 0) + invAmount(inv);
   }
 
   for (const store of stores) {
@@ -319,10 +319,10 @@ async function runT2Alert1(counts, invoices) {
     const cid = String(inv.customer_id);
     const d   = inv.date || '';
     if (d >= cur3From_s && d <= cur3To_s) {
-      curRev[cid] = (curRev[cid] || 0) + Number(inv.sub_total || 0);
+      curRev[cid] = (curRev[cid] || 0) + invAmount(inv);
     }
     if (d >= py3From_s && d <= py3To_s) {
-      pyRev[cid]  = (pyRev[cid]  || 0) + Number(inv.sub_total || 0);
+      pyRev[cid]  = (pyRev[cid]  || 0) + invAmount(inv);
     }
   }
 
@@ -395,7 +395,7 @@ async function runT2Alert2(counts, invoices) {
   for (const s of stores) storeByContactId[String(s.zoho_contact_id)] = s;
 
   for (const [cid, inv] of newDoorMap) {
-    const value = Number(inv.sub_total || 0);
+    const value = invAmount(inv);
     if (value < 500) continue;
 
     const store = storeByContactId[cid];

@@ -14,7 +14,7 @@
 const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const db = require('../db');
-const { fetchInvoicesWithTimeout } = require('../services/sync');
+const { fetchInvoicesWithTimeout, invAmount } = require('../services/sync');
 
 const router = express.Router();
 
@@ -161,7 +161,7 @@ async function calcKpi(repId, invoices, targets, quarter, year) {
   let qRevenue = 0, lyRevenue = 0;
   for (const inv of invoices) {
     if (!contactIds.has(String(inv.customer_id))) continue;
-    const total = Number(inv.sub_total || 0);
+    const total = invAmount(inv);
     if (inv.date >= qFrom && inv.date <= qTo)   qRevenue  += total;
     if (inv.date >= lyFrom && inv.date <= lyTo) lyRevenue += total;
   }

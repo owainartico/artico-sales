@@ -142,6 +142,26 @@ async function fetchItemBrandMap() {
   return map;
 }
 
+// ── Invoice amount helper ─────────────────────────────────────────────────────
+//
+// Zoho Books list API does not always return 'sub_total' (the ex-GST field).
+// The list endpoint reliably returns 'total' (inc-GST).
+// Some API versions / org settings also return 'sub_total'.
+//
+// Priority: sub_total (ex-GST, preferred) → total (inc-GST, fallback)
+// All revenue calculations in the app must use this helper, not inv.sub_total directly.
+
+/**
+ * Return the ex-GST invoice amount.
+ * Uses sub_total when present (ex-GST), falls back to total (inc-GST).
+ * @param {object} inv  – raw Zoho invoice object
+ * @returns {number}
+ */
+function invAmount(inv) {
+  const v = inv.sub_total ?? inv.total;
+  return Number(v) || 0;
+}
+
 // ── Invoice in-memory cache ───────────────────────────────────────────────────
 // Keyed by "fromDate::toDate". Only used for unfiltered (full-range) fetches.
 // Avoids the ~40s cold Zoho fetch on every dashboard load.
@@ -538,6 +558,7 @@ module.exports = {
   refreshInvoiceCacheInBackground,
   fetchSalesOrders,
   fetchItemBrandMap,
+  invAmount,
   startScheduler,
   isSyncRecentEnough,
   invalidateInvoiceCache,

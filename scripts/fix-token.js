@@ -96,20 +96,84 @@ async function forceTokenRefresh() {
 }
 
 async function testInvoiceFetch() {
-  console.log('\n── 5. Fetching invoices (7-day test) ────────────────────────');
+  console.log('\n── 5. Fetching invoices (7-day test) + field dump ───────────');
   const to   = new Date().toISOString().slice(0, 10);
   const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   try {
     const invoices = await fetchInvoices(from, to);
     console.log(`  ✓  ${invoices.length} invoices returned for ${from} → ${to}`);
+
     if (invoices.length > 0) {
-      const sample = invoices[0];
-      console.log(`  Sample: ${sample.customer_name} | ${sample.date} | $${sample.sub_total}`);
+      const s = invoices[0];
+
+      // Show EVERY field on the first invoice so we can identify the revenue field
+      console.log('\n  Raw invoice fields (ALL keys):');
+      for (const [k, v] of Object.entries(s)) {
+        if (Array.isArray(v)) {
+          console.log(`    ${k}: [array, ${v.length} items]`);
+        } else if (v !== null && typeof v === 'object') {
+          console.log(`    ${k}: {object}`);
+        } else {
+          console.log(`    ${k}: ${JSON.stringify(v)}`);
+        }
+      }
+
+      // Specifically call out amount-looking fields
+      console.log('\n  Amount/total fields:');
+      const amountFields = Object.entries(s).filter(([k, v]) =>
+        (k.includes('total') || k.includes('amount') || k.includes('tax') || k.includes('sub') || k.includes('balance') || k.includes('bcy'))
+        && v !== undefined && v !== null
+      );
+      if (amountFields.length === 0) {
+        console.log('    (none found — field names do not contain total/amount/tax/sub/balance/bcy)');
+      } else {
+        for (const [k, v] of amountFields) console.log(`    ${k}: ${v}`);
+      }
+
+      // Revenue field health check
+      console.log(`\n  Revenue field check:`);
+      console.log(`    inv.sub_total            = ${s.sub_total}  ${s.sub_total !== undefined ? '✓' : '✗ UNDEFINED'}`);
+      console.log(`    inv.total                = ${s.total}  ${s.total !== undefined ? '✓' : '✗ UNDEFINED'}`);
+      console.log(`    inv.salesperson_name     = ${JSON.stringify(s.salesperson_name)}`);
+      console.log(`    inv.customer_name        = ${JSON.stringify(s.customer_name)}`);
+      console.log(`    inv.customer_id          = ${JSON.stringify(s.customer_id)}`);
     }
-    return invoices.length > 0;
+
+    return invoices;
   } catch (err) {
     console.log('  ✗  Invoice fetch failed:', err.message);
-    return false;
+    return [];
+  }
+}
+
+async function checkSalespersonMatching(invoices) {
+  console.log('\n── 5b. Salesperson name matching ────────────────────────────');
+  if (!invoices.length) { console.log('  (skipped — no invoices)'); return; }
+
+  // Distinct salesperson names from Zoho invoices
+  const spCounts = {};
+  for (const inv of invoices) {
+    const sp = inv.salesperson_name || '(none)';
+    spCounts[sp] = (spCounts[sp] || 0) + 1;
+  }
+  console.log('  Zoho salesperson names in this 7-day window:');
+  for (const [name, count] of Object.entries(spCounts).sort((a, b) => b[1] - a[1])) {
+    console.log(`    "${name}"  (${count} invoices)`);
+  }
+
+  // All active reps and their configured names
+  const { rows: users } = await db.query(
+    `SELECT id, name, zoho_salesperson_id, zoho_salesperson_ids FROM users WHERE active=TRUE AND role='rep'`
+  );
+  console.log('\n  Active reps and their Zoho name mappings:');
+  const allZohoNames = new Set(Object.keys(spCounts));
+  for (const u of users) {
+    const names = (Array.isArray(u.zoho_salesperson_ids) && u.zoho_salesperson_ids.length)
+      ? u.zoho_salesperson_ids
+      : [u.zoho_salesperson_id || u.name];
+    const matched = names.filter(n => allZohoNames.has(n));
+    const status  = matched.length > 0 ? `✓ matches: ${JSON.stringify(matched)}` : '✗ NO MATCH in this window';
+    console.log(`    ${u.name.padEnd(24)} → ${JSON.stringify(names)}  ${status}`);
   }
 }
 
@@ -153,8 +217,9 @@ async function main() {
       console.log('\n✗ Cannot continue — fix the token first.');
       process.exit(1);
     }
-    const invoicesOk = await testInvoiceFetch();
-    if (invoicesOk) {
+    const invoices = await testInvoiceFetch();
+    await checkSalespersonMatching(invoices);
+    if (invoices.length > 0) {
       await runGrading();
     } else {
       console.log('  ⚠  Skipping grading — invoice fetch returned 0 results (Zoho may be slow, try again in 30s)');

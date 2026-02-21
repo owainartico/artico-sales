@@ -16,7 +16,7 @@
 const express      = require('express');
 const { requireAuth } = require('../middleware/auth');
 const db           = require('../db');
-const { fetchInvoices } = require('../services/sync');
+const { fetchInvoices, invAmount } = require('../services/sync');
 
 const router = express.Router();
 
@@ -107,7 +107,7 @@ router.get('/', requireAuth, async (req, res) => {
       if (!repId) continue;
       const cid = String(inv.customer_id);
 
-      const total = Number(inv.sub_total || 0);
+      const total = invAmount(inv);
       rev12m[repId]  = (rev12m[repId]  || 0) + total;
       totalRevPerRep[repId] = (totalRevPerRep[repId] || 0) + total;
 
