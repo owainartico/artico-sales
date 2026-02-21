@@ -502,6 +502,66 @@ async function fetchCreditNotes(fromDate, toDate) {
   return all;
 }
 
+// ── fetchSalesByPersonReport(fromDate, toDate) ────────────────────────────────
+//
+// Zoho Books Reports API: GET /reports/salesbysalesperson
+// Returns exact ex-GST revenue per salesperson, with credit notes already netted.
+// Far more accurate than summing invoice totals / 1.1 (some lines are GST-free).
+// Used for the dashboard leaderboard and rep hero revenue figures.
+//
+// Response rows contain (at minimum):
+//   salesperson_name  – matches zoho_salesperson_id / zoho_salesperson_ids
+//   total_sales       – ex-GST revenue net of credit notes (exact figure)
+//   cn_sales          – credit note value already deducted from total_sales
+
+const _salesReportCache = new Map();
+const SALES_REPORT_CACHE_TTL = 60 * 60 * 1000; // 60 minutes
+
+/**
+ * Fetch the Zoho "Sales by Salesperson" report for a date range.
+ * Returns the raw rows array from Zoho. Cached for 60 minutes.
+ *
+ * @param {string} fromDate – 'YYYY-MM-DD'
+ * @param {string} toDate   – 'YYYY-MM-DD'
+ * @returns {Array} raw Zoho report rows
+ */
+async function fetchSalesByPersonReport(fromDate, toDate) {
+  const key    = `${fromDate}::${toDate}`;
+  const cached = _salesReportCache.get(key);
+  if (cached && Date.now() - cached.ts < SALES_REPORT_CACHE_TTL) {
+    console.log(`[sync] salesbysalesperson cache hit — ${fromDate} to ${toDate} (${cached.data.length} rows)`);
+    return cached.data;
+  }
+
+  console.log(`[sync] salesbysalesperson fetching from Zoho — ${fromDate} to ${toDate}`);
+  const data = await makeZohoRequest('/reports/salesbysalesperson', {
+    from_date: fromDate,
+    to_date:   toDate,
+  });
+
+  // Zoho wraps the rows under a key — try known variants
+  const rows = data.salesbysalesperson || data.sales_by_salesperson || [];
+  _salesReportCache.set(key, { data: rows, ts: Date.now() });
+  console.log(`[sync] salesbysalesperson cached — ${rows.length} rows (${fromDate} to ${toDate})`);
+  return rows;
+}
+
+/**
+ * Build a Map<salesperson_name, totalSalesExGst> from salesbysalesperson rows.
+ * total_sales is exact ex-GST revenue already net of credit notes.
+ * @param {Array} rows – from fetchSalesByPersonReport()
+ * @returns {Map<string, number>}
+ */
+function buildSalesMap(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    if (row.salesperson_name) {
+      map.set(row.salesperson_name, Number(row.total_sales) || 0);
+    }
+  }
+  return map;
+}
+
 // ── Background scheduler ──────────────────────────────────────────────────────
 
 let _schedulerStarted = false;
@@ -553,6 +613,19 @@ function startScheduler() {
       .then(cns => console.log(`[scheduler] Credit note cache warm — ${cns.length} notes`))
       .catch((err) => console.error('[scheduler] Credit note pre-warm (18m) failed:', err.message));
 
+    // Pre-warm sales-by-salesperson reports for current month and YTD.
+    // These give exact ex-GST revenue figures for the leaderboard.
+    const pad        = x => String(x).padStart(2, '0');
+    const now        = new Date();
+    const monthStart = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-01`;
+    const yearStart  = `${now.getFullYear()}-01-01`;
+    fetchSalesByPersonReport(monthStart, toDate)
+      .then(r => console.log(`[scheduler] Sales report (month) warm — ${r.length} rows`))
+      .catch((err) => console.error('[scheduler] Sales report (month) pre-warm failed:', err.message));
+    fetchSalesByPersonReport(yearStart, toDate)
+      .then(r => console.log(`[scheduler] Sales report (YTD) warm — ${r.length} rows`))
+      .catch((err) => console.error('[scheduler] Sales report (YTD) pre-warm failed:', err.message));
+
     // Pre-warm item brand map
     fetchItemBrandMap().catch((err) =>
       console.error('[scheduler] Item brand map pre-warm failed:', err.message)
@@ -580,6 +653,20 @@ function startScheduler() {
     // Credit notes: replace cache each hour (they're few in number, fast to fetch)
     fetchCreditNotes(fromDate, toDate).catch((err) =>
       console.error('[scheduler] Credit note cache refresh (18m) failed:', err.message)
+    );
+
+    // Refresh sales-by-salesperson reports (invalidate stale entries then re-fetch)
+    const _pad        = x => String(x).padStart(2, '0');
+    const _now        = new Date();
+    const _monthStart = `${_now.getFullYear()}-${_pad(_now.getMonth() + 1)}-01`;
+    const _yearStart  = `${_now.getFullYear()}-01-01`;
+    _salesReportCache.delete(`${_monthStart}::${toDate}`);
+    _salesReportCache.delete(`${_yearStart}::${toDate}`);
+    fetchSalesByPersonReport(_monthStart, toDate).catch((err) =>
+      console.error('[scheduler] Sales report (month) refresh failed:', err.message)
+    );
+    fetchSalesByPersonReport(_yearStart, toDate).catch((err) =>
+      console.error('[scheduler] Sales report (YTD) refresh failed:', err.message)
     );
 
     // Refresh item brand map every hour too (brand assignments rarely change,
@@ -640,6 +727,8 @@ module.exports = {
   refreshInvoiceCacheInBackground,
   fetchCreditNotes,
   fetchCreditNotesWithTimeout,
+  fetchSalesByPersonReport,
+  buildSalesMap,
   fetchSalesOrders,
   fetchItemBrandMap,
   invAmount,

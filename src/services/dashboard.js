@@ -12,7 +12,7 @@
  */
 
 const db                                               = require('../db');
-const { fetchInvoicesWithTimeout, fetchCreditNotesWithTimeout, fetchItemBrandMap, invAmount } = require('./sync');
+const { fetchInvoicesWithTimeout, fetchSalesByPersonReport, buildSalesMap, fetchItemBrandMap, invAmount } = require('./sync');
 
 // ── In-memory cache ───────────────────────────────────────────────────────────
 
@@ -234,9 +234,12 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
   const yearStart = `${month.slice(0, 4)}-01-01`;
 
   // ── Parallel fetches ──
-  const [invoices, creditNotes, mTargetRow, ytdTargets, histTargets, visits, overdue, syncAt, storeRows] = await Promise.all([
+  const [invoices, reportRows, ytdReportRows, mTargetRow, ytdTargets, histTargets, visits, overdue, syncAt, storeRows] = await Promise.all([
+    // Invoices still needed for: monthly history sparkline, brand breakdown, territory growth, new doors
     fetchInvoicesWithTimeout(histFrom, mTo).catch((err) => { console.error('[dashboard] rep invoice fetch failed:', err.message); return []; }),
-    fetchCreditNotesWithTimeout(histFrom, mTo).catch((err) => { console.error('[dashboard] rep credit note fetch failed:', err.message); return []; }),
+    // Reports API: exact ex-GST revenue net of credit notes, for current month and YTD
+    fetchSalesByPersonReport(mFrom, mTo).catch((err) => { console.error('[dashboard] rep sales report (month) failed:', err.message); return []; }),
+    fetchSalesByPersonReport(yearStart, mTo).catch((err) => { console.error('[dashboard] rep sales report (YTD) failed:', err.message); return []; }),
     db.query(`SELECT amount FROM revenue_targets WHERE rep_id=$1 AND month=$2`, [repId, month]),
     db.query(
       `SELECT SUM(amount) AS total FROM revenue_targets
@@ -253,41 +256,42 @@ async function getRepDashboard(repId, month = currentMonth(), { force = false } 
     db.query(`SELECT zoho_contact_id FROM stores WHERE rep_id=$1 AND active=TRUE`, [repId]),
   ]);
 
-  // Combine invoices with negated credit notes for net revenue calculations.
-  // Credit notes share the same customer_id, salesperson_name, date fields as invoices.
-  // Flipping their total negative means invAmount() returns a negative value,
-  // so byMonth() and territory calculations automatically subtract credits.
-  // line_items are absent on credit notes so buildBrandTotals skips them naturally.
-  // newDoorCount and data_loading still reference the raw invoices array.
-  const allTx = [
-    ...invoices,
-    ...creditNotes.map(cn => ({ ...cn, total: -(Number(cn.total) || 0) })),
-  ];
-
   const target     = Number(mTargetRow.rows[0]?.amount || 0);
   const ytd_target = Number(ytdTargets.rows[0]?.total  || 0);
 
-  const actuals    = byMonth(allTx, spNames);  // net of credit notes
-  const actual     = actuals[month] || 0;
+  // ── Revenue from Reports API (exact ex-GST, credit notes already netted) ──
+  // Falls back to invoice-based estimate (total/1.1) if the reports API returned nothing.
+  const salesMap    = buildSalesMap(reportRows);
+  const ytdSalesMap = buildSalesMap(ytdReportRows);
+
+  // Invoice-based monthly breakdown — used for history sparkline and fallback
+  const invoiceActuals = byMonth(invoices, spNames);
+
+  const actual = reportRows.length > 0
+    ? spNames.reduce((s, n) => s + (salesMap.get(n) || 0), 0)
+    : (invoiceActuals[month] || 0);
+
+  const ytd_actual = ytdReportRows.length > 0
+    ? spNames.reduce((s, n) => s + (ytdSalesMap.get(n) || 0), 0)
+    : Object.entries(invoiceActuals)
+        .filter(([m]) => m >= yearStart.slice(0, 7) && m <= month)
+        .reduce((s, [, v]) => s + v, 0);
+
   const percentage = target > 0 ? Math.round((actual / target) * 100) : null;
 
-  // YTD actual = sum from Jan to current month
-  const ytd_actual = Object.entries(actuals)
-    .filter(([m]) => m >= yearStart.slice(0, 7) && m <= month)
-    .reduce((s, [, v]) => s + v, 0);
-
-  // Monthly history
+  // Monthly history — uses invoice-based figures for all months.
+  // Current month bar uses the exact reports figure for consistency with the hero number.
   const targetByM = {};
   for (const r of histTargets.rows) targetByM[r.month] = Number(r.amount);
   const monthly_history = months12.map(m => ({
     month: m,
-    actual: actuals[m] || 0,
+    actual: m === month ? actual : (invoiceActuals[m] || 0),
     target: targetByM[m] || 0,
   }));
 
-  // Territory growth — compare current month vs same month LY, by store ownership
+  // Territory growth — uses invoice data (needs per-customer breakdown, reports doesn't have it)
   const repContactIds = new Set(storeRows.rows.map(s => String(s.zoho_contact_id)));
-  const territory_growth = computeTerritoryGrowth(allTx, repContactIds, mFrom, mTo);
+  const territory_growth = computeTerritoryGrowth(invoices, repContactIds, mFrom, mTo);
 
   // Brand breakdown (current month only) — dynamic from item catalog
   const mInvoices = invoices.filter(i => spNames.includes(i.salesperson_name) && i.date >= mFrom && i.date <= mTo);
@@ -354,10 +358,13 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   const qStart  = `${new Date().getFullYear()}-${String(qMonth + 1).padStart(2, '0')}-01`;
 
   // ── Parallel fetches ──
-  const [repsResult, invoices, creditNotes, mTargets, ytdTargets, brandMTargets, syncAt, storesByRepResult, gradeDist, gradeTrend] = await Promise.all([
+  const [repsResult, invoices, reportRows, ytdReportRows, mTargets, ytdTargets, brandMTargets, syncAt, storesByRepResult, gradeDist, gradeTrend] = await Promise.all([
     db.query(`SELECT id, name, zoho_salesperson_id, zoho_salesperson_ids FROM users WHERE role='rep' AND active=TRUE ORDER BY name`),
+    // Invoices still needed for: monthly history, brand breakdown, territory growth, new doors
     fetchInvoicesWithTimeout(histFrom, mTo).catch((err) => { console.error('[dashboard] team invoice fetch failed:', err.message); return []; }),
-    fetchCreditNotesWithTimeout(histFrom, mTo).catch((err) => { console.error('[dashboard] team credit note fetch failed:', err.message); return []; }),
+    // Reports API: exact ex-GST revenue net of credit notes, for current month and YTD
+    fetchSalesByPersonReport(mFrom, mTo).catch((err) => { console.error('[dashboard] team sales report (month) failed:', err.message); return []; }),
+    fetchSalesByPersonReport(yearStart, mTo).catch((err) => { console.error('[dashboard] team sales report (YTD) failed:', err.message); return []; }),
     db.query(`SELECT rep_id, amount FROM revenue_targets WHERE month=$1`, [month]),
     db.query(
       `SELECT rep_id, SUM(amount) AS total FROM revenue_targets
@@ -386,12 +393,11 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
     ).catch(() => ({ rows: [{ upgrades: 0, downgrades: 0 }] })),
   ]);
 
-  // Combine invoices with negated credit notes — same approach as rep dashboard.
-  // All revenue calculations use allTx; brand line items and new-door counts use invoices only.
-  const allTx = [
-    ...invoices,
-    ...creditNotes.map(cn => ({ ...cn, total: -(Number(cn.total) || 0) })),
-  ];
+  // ── Revenue maps from Reports API ──
+  // Exact ex-GST totals, credit notes already netted by Zoho.
+  // Falls back to invoice-based (total/1.1) if the reports API returned nothing.
+  const salesMap    = buildSalesMap(reportRows);
+  const ytdSalesMap = buildSalesMap(ytdReportRows);
 
   // Build rep_id → Set<zoho_contact_id>
   const contactsByRep = new Map();
@@ -424,14 +430,23 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   // Leaderboard
   const leaderboard = reps.map(rep => {
     const spNames = repSpNames(rep);
-    const actuals = byMonth(allTx, spNames);  // net of credit notes
-    const actual  = actuals[month] || 0;
+
+    // Revenue from Reports API — exact ex-GST, credit notes netted.
+    // Fall back to invoice-based estimate if the reports API returned nothing.
+    const invoiceActuals = byMonth(invoices, spNames);
+    const actual = reportRows.length > 0
+      ? spNames.reduce((s, n) => s + (salesMap.get(n) || 0), 0)
+      : (invoiceActuals[month] || 0);
+    const ytd_actual = ytdReportRows.length > 0
+      ? spNames.reduce((s, n) => s + (ytdSalesMap.get(n) || 0), 0)
+      : Object.entries(invoiceActuals)
+          .filter(([m]) => m >= yearStart.slice(0, 7) && m <= month)
+          .reduce((s, [, v]) => s + v, 0);
+
     const target  = tByRep[rep.id] || 0;
-    const ytd_actual = Object.entries(actuals)
-      .filter(([m]) => m >= yearStart.slice(0, 7) && m <= month)
-      .reduce((s, [, v]) => s + v, 0);
     const repContacts  = contactsByRep.get(rep.id) || new Set();
-    const tg   = computeTerritoryGrowth(allTx, repContacts, mFrom, mTo);
+    // Territory growth uses invoices (needs per-customer breakdown, reports don't provide it)
+    const tg   = computeTerritoryGrowth(invoices, repContacts, mFrom, mTo);
     const dist = gradeDistByRep[rep.id] || { A: 0, B: 0, C: 0, ungraded: 0 };
     return {
       rep_id: rep.id, name: rep.name, actual, target,
@@ -453,10 +468,10 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
   };
   totals.percentage = totals.target > 0 ? Math.round((totals.actual / totals.target) * 100) : null;
 
-  // Company territory growth — union of all assigned store contacts
+  // Company territory growth — union of all assigned store contacts (invoice-based)
   const allAssignedContacts = new Set();
   for (const ids of contactsByRep.values()) for (const id of ids) allAssignedContacts.add(id);
-  const company_territory_growth = computeTerritoryGrowth(allTx, allAssignedContacts, mFrom, mTo);
+  const company_territory_growth = computeTerritoryGrowth(invoices, allAssignedContacts, mFrom, mTo);
 
   const ytd = {
     actual:  leaderboard.reduce((s, r) => s + r.ytd_actual, 0),
@@ -492,12 +507,16 @@ async function getTeamDashboard(month = currentMonth(), { force = false } = {}) 
     return { rep_id: rep.id, name: rep.name, count: newDoorCount(invoices, repSpNames(rep), mFrom, mTo) };
   });
 
-  // Monthly history for company total (18 months) — net of credit notes
+  // Monthly history — invoice-based for all months.
+  // Current month bar uses the exact reports figure so it matches the totals card.
   const monthly_history = months18.map(m => {
-    const actual = reps.reduce((s, rep) => {
-      return s + (byMonth(allTx, repSpNames(rep))[m] || 0);
-    }, 0);
-    return { month: m, actual, target: 0 }; // target aggregation not stored by month-company
+    let actual;
+    if (m === month) {
+      actual = totals.actual; // exact figure from reports API (already computed above)
+    } else {
+      actual = reps.reduce((s, rep) => s + (byMonth(invoices, repSpNames(rep))[m] || 0), 0);
+    }
+    return { month: m, actual, target: 0 };
   });
 
   const data_loading = invoices.length === 0;
