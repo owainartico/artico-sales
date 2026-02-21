@@ -121,25 +121,34 @@ router.get('/quarter', requireAuth, async (req, res) => {
       : req.session.userId;
 
     const weeks = quarterWeeks(q, yr);
+    const wFirst = weeks[0], wLast = weeks[weeks.length - 1];
 
-    // Counts for all weeks in one query
-    const { rows: counts } = await db.query(`
-      SELECT
-        planned_week,
-        COUNT(*)::INTEGER                                          AS total,
-        COUNT(*) FILTER (WHERE status = 'confirmed')::INTEGER     AS confirmed,
-        COUNT(*) FILTER (WHERE status = 'suggested')::INTEGER     AS suggested,
-        COUNT(*) FILTER (WHERE status = 'completed')::INTEGER     AS completed,
-        COUNT(*) FILTER (WHERE status = 'skipped')::INTEGER       AS skipped
-      FROM call_plan_items
-      WHERE rep_id = $1 AND planned_week >= $2 AND planned_week <= $3
-      GROUP BY planned_week
-    `, [repId, weeks[0], weeks[weeks.length - 1]]);
-
-    const { rows: submitted } = await db.query(`
-      SELECT week_start FROM weekly_plans
-      WHERE rep_id = $1 AND week_start >= $2 AND week_start <= $3
-    `, [repId, weeks[0], weeks[weeks.length - 1]]);
+    // Per-week counts + quarter summary in parallel
+    const [{ rows: counts }, { rows: submitted }, { rows: [summary] }] = await Promise.all([
+      db.query(`
+        SELECT
+          planned_week,
+          COUNT(*)::INTEGER                                          AS total,
+          COUNT(*) FILTER (WHERE status = 'confirmed')::INTEGER     AS confirmed,
+          COUNT(*) FILTER (WHERE status = 'suggested')::INTEGER     AS suggested,
+          COUNT(*) FILTER (WHERE status = 'completed')::INTEGER     AS completed,
+          COUNT(*) FILTER (WHERE status = 'skipped')::INTEGER       AS skipped
+        FROM call_plan_items
+        WHERE rep_id = $1 AND planned_week >= $2 AND planned_week <= $3
+        GROUP BY planned_week
+      `, [repId, wFirst, wLast]),
+      db.query(`
+        SELECT week_start FROM weekly_plans
+        WHERE rep_id = $1 AND week_start >= $2 AND week_start <= $3
+      `, [repId, wFirst, wLast]),
+      db.query(`
+        SELECT
+          COUNT(DISTINCT store_id) FILTER (WHERE status = 'completed')::INTEGER              AS completed_stores,
+          COUNT(DISTINCT store_id) FILTER (WHERE status IN ('suggested','confirmed'))::INTEGER AS remaining_stores
+        FROM call_plan_items
+        WHERE rep_id = $1 AND planned_week >= $2 AND planned_week <= $3
+      `, [repId, wFirst, wLast]),
+    ]);
 
     const submittedSet = new Set(submitted.map(r =>
       r.week_start instanceof Date ? r.week_start.toISOString().slice(0, 10) : String(r.week_start).slice(0, 10)
@@ -163,7 +172,13 @@ router.get('/quarter', requireAuth, async (req, res) => {
       };
     });
 
-    res.json({ quarter: q, year: yr, rep_id: repId, weeks: result });
+    res.json({
+      quarter: q, year: yr, rep_id: repId, weeks: result,
+      quarter_summary: {
+        completed_stores: summary?.completed_stores || 0,
+        remaining_stores: summary?.remaining_stores || 0,
+      },
+    });
   } catch (err) {
     console.error('[planner] quarter error:', err.message);
     res.status(500).json({ error: err.message });
@@ -220,21 +235,28 @@ router.post('/generate', requireAuth, async (req, res) => {
 
     // ── Quarter-wide generate ────────────────────────────────────────────────
     if (scope === 'quarter') {
-      const cq     = currentQuarter();
-      const q      = req.body.quarter ? parseInt(req.body.quarter) : cq.quarter;
-      const yr     = req.body.year    ? parseInt(req.body.year)    : cq.year;
-      const weeks  = quarterWeeks(q, yr);
+      const cq    = currentQuarter();
+      const q     = req.body.quarter ? parseInt(req.body.quarter) : cq.quarter;
+      const yr    = req.body.year    ? parseInt(req.body.year)    : cq.year;
+      const weeks = quarterWeeks(q, yr);
 
-      const qStartMs = new Date(weeks[0] + 'T00:00:00Z').getTime();
-      const qEndMs   = new Date(weeks[weeks.length - 1] + 'T23:59:59Z').getTime();
+      const qFrom    = weeks[0];                          // e.g. 2026-01-05 (first Monday)
+      const qLast    = weeks[weeks.length - 1];           // last Monday of quarter
+      const qStartMs = new Date(qFrom   + 'T00:00:00Z').getTime();
+      const qEndMs   = new Date(qLast   + 'T23:59:59Z').getTime();
 
-      // Delete all suggested items for this rep in these weeks
+      // Quarter calendar bounds (to catch visits before first Monday)
+      const monthStart = (q - 1) * 3;
+      const qCalFrom = new Date(Date.UTC(yr, monthStart, 1)).toISOString().slice(0, 10);
+      const qCalTo   = new Date(Date.UTC(yr, monthStart + 3, 0)).toISOString().slice(0, 10);
+
+      // 1. Delete only suggested items (keep confirmed/completed/skipped)
       await db.query(
         `DELETE FROM call_plan_items WHERE rep_id = $1 AND planned_week >= $2 AND planned_week <= $3 AND status = 'suggested'`,
-        [repId, weeks[0], weeks[weeks.length - 1]]
+        [repId, qFrom, qLast]
       );
 
-      // All active graded stores with last visit date
+      // 2. All active graded stores (with last visit from all time for interval calc)
       const { rows: stores } = await db.query(`
         SELECT
           s.id AS store_id, s.name, s.grade, s.state, s.postcode,
@@ -244,42 +266,94 @@ router.post('/generate', requireAuth, async (req, res) => {
       `, [repId]);
 
       if (stores.length === 0) {
-        return res.json({ ok: true, generated: 0, weeks_planned: 0, message: 'No graded stores found' });
+        return res.json({ ok: true, generated: 0, weeks_planned: 0, completed_stores: 0, stores_remaining: 0, message: 'No graded stores found' });
       }
 
-      // Committed items (non-suggested) that we must not overwrite
+      const storeIds = stores.map(s => s.store_id);
+
+      // 3. Fetch all actual visits for these stores this quarter
+      const { rows: qVisits } = await db.query(`
+        SELECT store_id, visited_at
+        FROM visits
+        WHERE store_id = ANY($1) AND visited_at >= $2 AND visited_at <= $3
+        ORDER BY store_id, visited_at ASC
+      `, [storeIds, qCalFrom + 'T00:00:00Z', qCalTo + 'T23:59:59Z']);
+
+      // Group visits by store_id (sorted ascending — already ordered by DB)
+      const quarterVisits = new Map(); // store_id → [Date, ...]
+      for (const v of qVisits) {
+        const sid = v.store_id;
+        if (!quarterVisits.has(sid)) quarterVisits.set(sid, []);
+        quarterVisits.get(sid).push(new Date(v.visited_at));
+      }
+
+      // 4. Insert completed plan items for each actual visit
+      //    Use the ISO Monday of the visit date as planned_week.
+      //    day_of_week derived from actual visit day (Mon=1…Fri=5, clamp weekend→Fri).
+      let completedInserted = 0;
+      for (const v of qVisits) {
+        const visitDate  = new Date(v.visited_at);
+        const visitWeek  = isoMonday(visitDate.toISOString().slice(0, 10));
+        // Only insert if this week is within our quarter weeks range
+        if (visitWeek < qFrom || visitWeek > qLast) continue;
+
+        const jsDow  = visitDate.getUTCDay(); // 0=Sun, 1=Mon…6=Sat
+        // Map to Mon=1…Fri=5, clamp Sun→Mon, Sat→Fri
+        const dayOfWeek = jsDow === 0 ? 1 : jsDow === 6 ? 5 : jsDow;
+
+        await db.query(`
+          INSERT INTO call_plan_items (rep_id, store_id, planned_week, day_of_week, position, status)
+          VALUES ($1, $2, $3, $4, 1, 'completed')
+          ON CONFLICT (rep_id, store_id, planned_week)
+            DO UPDATE SET status = 'completed', day_of_week = EXCLUDED.day_of_week
+        `, [repId, v.store_id, visitWeek, dayOfWeek]);
+        completedInserted++;
+      }
+
+      // 5. Non-suggested committed items (confirmed etc.) — don't place suggested on same week
       const { rows: committed } = await db.query(`
         SELECT store_id, planned_week FROM call_plan_items
         WHERE rep_id = $1 AND planned_week >= $2 AND planned_week <= $3 AND status != 'suggested'
-      `, [repId, weeks[0], weeks[weeks.length - 1]]);
-      const committedSet = new Set(committed.map(c => `${c.store_id}:${String(c.planned_week).slice(0,10)}`));
+      `, [repId, qFrom, qLast]);
+      const committedSet = new Set(committed.map(c => `${c.store_id}:${String(c.planned_week).slice(0, 10)}`));
 
       const INTERVAL_A  = 42 * 86400000; // 6 weeks ms
       const INTERVAL_BC = 84 * 86400000; // 12 weeks ms
 
-      // Build week buckets
+      // 6. Build suggested visit schedule, accounting for real visits already done
       const weekBuckets = new Map();
       for (const w of weeks) weekBuckets.set(w, []);
 
       for (const store of stores) {
-        const interval  = store.grade === 'A' ? INTERVAL_A : INTERVAL_BC;
-        const lastVisitMs = store.last_visit ? new Date(store.last_visit).getTime() : null;
+        const interval     = store.grade === 'A' ? INTERVAL_A : INTERVAL_BC;
+        const visitsDone   = quarterVisits.get(store.store_id) || [];
+        const visitsNeeded = store.grade === 'A' ? 2 : 1;
 
-        // First visit: next due date clamped to quarter start
-        const firstDueMs = lastVisitMs
-          ? Math.max(qStartMs, lastVisitMs + interval)
-          : qStartMs;
+        // Collect due dates for remaining visits
+        const dueDates = [];
 
-        const visitDueDates = [];
-        if (firstDueMs <= qEndMs) visitDueDates.push(firstDueMs);
+        if (visitsDone.length === 0) {
+          // Not visited yet — use last visit from all time to compute first due
+          const lastVisitMs = store.last_visit ? new Date(store.last_visit).getTime() : null;
+          const firstDueMs  = lastVisitMs
+            ? Math.max(qStartMs, lastVisitMs + interval)
+            : qStartMs;
+          if (firstDueMs <= qEndMs) dueDates.push(firstDueMs);
 
-        // A stores get a second visit 6 weeks after the first
-        if (store.grade === 'A' && visitDueDates.length > 0) {
-          const secondDueMs = visitDueDates[0] + INTERVAL_A;
-          if (secondDueMs <= qEndMs) visitDueDates.push(secondDueMs);
+          // A stores: second visit 6 weeks after first
+          if (store.grade === 'A' && dueDates.length > 0) {
+            const secondDueMs = dueDates[0] + INTERVAL_A;
+            if (secondDueMs <= qEndMs) dueDates.push(secondDueMs);
+          }
+        } else if (visitsDone.length < visitsNeeded) {
+          // Partially covered — schedule remaining visits from last actual visit
+          const lastVisitMs = visitsDone[visitsDone.length - 1].getTime();
+          const nextDueMs   = lastVisitMs + interval;
+          if (nextDueMs <= qEndMs) dueDates.push(nextDueMs);
         }
+        // If visitsDone.length >= visitsNeeded → fully covered, nothing to schedule
 
-        for (const dueMs of visitDueDates) {
+        for (const dueMs of dueDates) {
           // Find first quarter week on or after the due date
           let targetWeek = null;
           for (const w of weeks) {
@@ -293,7 +367,7 @@ router.post('/generate', requireAuth, async (req, res) => {
         }
       }
 
-      // Insert each week's stores with geographic clustering
+      // 7. Insert suggested items with geographic clustering per week
       let totalInserted = 0, weeksPlanned = 0;
       for (const [week, wStores] of weekBuckets) {
         if (wStores.length === 0) continue;
@@ -311,7 +385,20 @@ router.post('/generate', requireAuth, async (req, res) => {
         if (dayBuckets.some(b => b.length > 0)) weeksPlanned++;
       }
 
-      return res.json({ ok: true, generated: totalInserted, weeks_planned: weeksPlanned });
+      const completedStores = quarterVisits.size;
+      const storesRemaining = stores.filter(s => {
+        const done   = (quarterVisits.get(s.store_id) || []).length;
+        const needed = s.grade === 'A' ? 2 : 1;
+        return done < needed;
+      }).length;
+
+      return res.json({
+        ok: true,
+        generated:        totalInserted,
+        weeks_planned:    weeksPlanned,
+        completed_stores: completedStores,
+        stores_remaining: storesRemaining,
+      });
     }
 
     // ── Single-week generate (default) ──────────────────────────────────────

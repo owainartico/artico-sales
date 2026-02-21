@@ -2139,3 +2139,22 @@ body {
   color: #fff;
   border-color: var(--color-navy);
 }
+
+/* ── Quarter summary bar ─────────────────────────────────────── */
+.planner-qtr-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-2);
+  font-size: 0.8rem;
+}
+.planner-qtr-summary__item { color: var(--color-text); }
+.planner-qtr-summary__item--done {
+  color: #065F46;
+  font-weight: 600;
+}
+.planner-qtr-summary__sep { color: var(--color-muted); }

@@ -3173,7 +3173,7 @@ async function loadPlanner() {
 // ── Render quarter accordion ────────────────────────────────────────
 
 function renderPlannerPage(page, qData, isManager) {
-  const { quarter, year, weeks } = qData;
+  const { quarter, year, weeks, quarter_summary } = qData;
 
   let managerBar = '';
   if (isManager) {
@@ -3184,6 +3184,24 @@ function renderPlannerPage(page, qData, isManager) {
     managerBar = `<div class="planner-manager-bar"><span class="text-sm text-muted">${lbl}</span>${btn}</div>`;
   }
 
+  let summaryBar = '';
+  if (quarter_summary) {
+    const { completed_stores, remaining_stores } = quarter_summary;
+    const hasData = completed_stores > 0 || remaining_stores > 0;
+    if (hasData) {
+      summaryBar = `
+        <div class="planner-qtr-summary">
+          <span class="planner-qtr-summary__item planner-qtr-summary__item--done">
+            &#10003; ${completed_stores} visit${completed_stores !== 1 ? 's' : ''} completed
+          </span>
+          <span class="planner-qtr-summary__sep">·</span>
+          <span class="planner-qtr-summary__item">
+            ${remaining_stores} store${remaining_stores !== 1 ? 's' : ''} remaining
+          </span>
+        </div>`;
+    }
+  }
+
   page.innerHTML = `
     ${managerBar}
     <div class="planner-quarter-nav">
@@ -3192,6 +3210,7 @@ function renderPlannerPage(page, qData, isManager) {
       <button class="btn-icon-sm" onclick="shiftPlannerQuarter(1)">&#8594;</button>
       <button class="btn btn--ghost btn--sm" onclick="generatePlannerQuarter()" style="margin-left:auto;">&#9889; Generate Quarter</button>
     </div>
+    ${summaryBar}
     <div id="planner-quarter-weeks">
       ${weeks.map(w => renderQuarterWeekRow(w)).join('')}
     </div>`;
@@ -3329,9 +3348,18 @@ async function generatePlannerQuarter() {
   const result = await api('POST', '/api/planner/generate', body);
   if (btn) { btn.disabled = false; btn.textContent = '⚡ Generate Quarter'; }
   if (!result || result.error) { toast(result?.error || 'Generate failed.'); return; }
-  toast(result.generated > 0
-    ? `Quarter planned — ${result.generated} stores across ${result.weeks_planned} week${result.weeks_planned !== 1 ? 's' : ''}.`
-    : (result.message || 'No stores to schedule.'));
+
+  let msg;
+  if (result.message && result.generated === 0) {
+    msg = result.message;
+  } else {
+    const parts = [];
+    if (result.completed_stores > 0) parts.push(`${result.completed_stores} visits completed`);
+    if (result.generated > 0)        parts.push(`${result.generated} visits planned across ${result.weeks_planned} week${result.weeks_planned !== 1 ? 's' : ''}`);
+    if (result.stores_remaining != null) parts.push(`${result.stores_remaining} stores still to do`);
+    msg = parts.length ? parts.join(' · ') : 'Quarter generated.';
+  }
+  toast(msg);
   _plannerWeekCache.clear();
   loadPlanner();
 }
