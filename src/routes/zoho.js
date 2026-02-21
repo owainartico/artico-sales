@@ -524,4 +524,54 @@ router.post('/debug/run-planner-migration', requireRole('executive'), async (req
   res.json({ ok: true, results });
 });
 
+// ── GET /api/debug/reports-probe ──────────────────────────────────────────────
+// Probes Zoho Books Reports API endpoints to see which ones exist and what
+// data they return. Tries multiple candidate paths for the sales-by-salesperson
+// report. Executive only — this makes live Zoho API calls.
+
+router.get('/debug/reports-probe', requireRole('executive'), async (req, res) => {
+  const { makeZohoRequest } = require('../services/zoho');
+
+  // Date range to use for report queries — default to current month
+  const now  = new Date();
+  const y    = now.getFullYear();
+  const m    = String(now.getMonth() + 1).padStart(2, '0');
+  const from = req.query.from || `${y}-${m}-01`;
+  const to   = req.query.to   || `${y}-${m}-${String(new Date(y, now.getMonth() + 1, 0).getDate()).padStart(2, '0')}`;
+
+  const candidates = [
+    // Candidate paths to try — Zoho doesn't publicly document these
+    { path: '/reports/salespersonsales',   params: { from_date: from, to_date: to } },
+    { path: '/reports/salespersonsales',   params: { date_start: from, date_end: to } },
+    { path: '/reports/salesbysalesperson', params: { from_date: from, to_date: to } },
+    { path: '/reports',                    params: {} },
+    { path: '/reports/salesbycustomer',    params: { from_date: from, to_date: to } },
+    { path: '/reports/salessummary',       params: { from_date: from, to_date: to } },
+  ];
+
+  const results = [];
+  for (const { path, params } of candidates) {
+    try {
+      const data = await makeZohoRequest(path, params);
+      results.push({
+        path,
+        params,
+        status: 'ok',
+        // Show top-level keys and a small sample of the response
+        keys: Object.keys(data),
+        sample: JSON.stringify(data).slice(0, 800),
+      });
+    } catch (err) {
+      results.push({
+        path,
+        params,
+        status: 'error',
+        error: err.message,
+      });
+    }
+  }
+
+  res.json({ date_range: { from, to }, results });
+});
+
 module.exports = router;
